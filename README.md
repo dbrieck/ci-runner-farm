@@ -79,10 +79,39 @@ Unraid always resolves this to the newest published release, and its built-in
 
 Both methods above need a **public** release URL — Unraid's plugin installer
 downloads anonymously, and a private repo's release assets return 404 without
-authentication. For a private fork like this one, sideload the package onto
-flash instead; the `.plg`'s standard URL/MD5 `<FILE>` block skips the download
-whenever the file already exists on flash with a matching MD5, so the install
-(and every on-boot reinstall) works entirely offline:
+authentication. Two ways around it:
+
+#### Option A: host on Google Cloud Storage (keeps update checks working)
+
+Serve the two build artifacts from a public GCS bucket — public objects serve
+raw bytes at stable URLs, the `.plg`'s MD5 pin makes the hosting location
+integrity-neutral, and the package contains no secrets (your token/config live
+on flash, never in the tarball). One command does everything (bucket setup if
+needed, build, upload, URL):
+
+```sh
+gcloud auth login && gcloud config set project <your-project>   # once
+./scripts/publish-gcs.sh <bucket-name>                          # every publish
+```
+
+It prints the public `.plg` URL to paste into **Plugins → Install Plugin**.
+Because the `.plg` is built with `PLUGIN_URL_BASE` pointing at the bucket (and
+uploaded with `Cache-Control: no-cache`), Unraid's built-in **check for
+updates** keeps working: re-run the script after changes and the plugin
+manager offers the update. Costs are effectively zero at ~40KB per version.
+
+`PLUGIN_URL_BASE` works with any static host serving raw bytes, not just GCS:
+
+```sh
+PLUGIN_URL_BASE=https://my-host.example/unraid ./build-plg.sh
+```
+
+#### Option B: sideload onto flash (no hosting at all)
+
+Copy the package onto flash yourself; the `.plg`'s standard URL/MD5 `<FILE>`
+block skips the download whenever the file already exists on flash with a
+matching MD5, so the install (and every on-boot reinstall) works entirely
+offline:
 
 ```sh
 ./build-plg.sh                       # builds ci-runner-farm.plg + ci-runner-farm.tgz
@@ -101,8 +130,8 @@ Because the `.plg` and its package live under `/boot/config/plugins/`, Unraid
 re-installs the plugin from flash on every boot — no network fetch, no auth
 needed. To update, rebuild and repeat (remove the old
 `ci-runner-farm-*.tgz` from the config dir first, or let the install script's
-own sweep handle it). The one thing you lose versus a public release is the
-plugin manager's automatic "check for updates".
+own sweep handle it). The one thing you lose versus Option A is the plugin
+manager's automatic "check for updates".
 
 For quick dev iteration there's also `./deploy.sh root@tower`, which copies the
 plugin tree straight into place — but `/usr/local/emhttp` is RAM-backed, so a
@@ -284,6 +313,7 @@ ci-runner-farm.plg                 installer (built artifact, committed; URL/MD5
 build-plg.sh                       packages src/ -> versioned .plg + .tgz
 deploy.sh                          dev-only raw deploy to an Unraid host (not reboot-persistent)
 scripts/render-pages.php           CLI render/assertion harness for the tab pages
+scripts/publish-gcs.sh             build + publish to a public GCS bucket (private forks)
 release-please-config.json         release-please configuration
 .release-please-manifest.json      SemVer source of truth
 VERSION                            mirror of the internal SemVer version
