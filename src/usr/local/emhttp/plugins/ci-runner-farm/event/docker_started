@@ -13,7 +13,15 @@
 # refills the fleet to its floor, and relaunches the autoscale/image-update
 # daemons. It is idempotent and a no-op until a GitHub token is configured.
 #
-# Detached so we never block Unraid's start sequence.
+# Detached so we never block Unraid's start sequence. Loops over every
+# configured profile (not just "default") so multi-fleet installs all come
+# back up.
 PLGDIR="/usr/local/emhttp/plugins/ci-runner-farm"
 CFGDIR="/boot/config/plugins/ci-runner-farm"
-( nohup "$PLGDIR/include/runner-farm.sh" boot-autostart >>"$CFGDIR/boot.log" 2>&1 & ) || true
+SCRIPT="$PLGDIR/include/runner-farm.sh"
+(
+  for p in $("$SCRIPT" list-profiles); do
+    nohup "$SCRIPT" boot-autostart "$p" >>"$CFGDIR/boot.log" 2>&1
+  done
+) &
+true

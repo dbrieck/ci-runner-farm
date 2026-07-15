@@ -6,11 +6,60 @@ Tag="server"
 <?php
 /* CI Runner Farm settings page - native Unraid markdown form + inline help */
 $plugin   = 'ci-runner-farm';
+$cfgdir   = "/boot/config/plugins/$plugin";
+
+/* ---- profile resolution ----------------------------------------------------
+   A PROFILE is a named fleet: its own cfg/Dockerfile/token, namespaced caches,
+   and container names (see runner-farm.sh). "default" is the original
+   single-fleet behavior — always present, never deletable — so an existing
+   single-fleet install needs zero config changes. The active profile is
+   chosen via ?profile=NAME (a plain page reload; Add/Delete reload too). */
+function crf_valid_profile($name) {
+  return $name !== '' && strlen($name) <= 32 && preg_match('/^[A-Za-z0-9-]+$/', $name) === 1;
+}
+function crf_list_profiles($cfgdir, $plugin) {
+  $out = ['default'];
+  foreach ((glob("$cfgdir/*.cfg") ?: []) as $f) {
+    $name = basename($f, '.cfg');
+    if ($name !== $plugin) $out[] = $name;
+  }
+  return $out;
+}
+// Read a profile's cfg WITHOUT relying on parse_plugin_cfg (which only knows the
+// fixed default filename) — mirrors runner-farm.sh's own bash-side parser
+// (KEY="value" lines, '#' comments, blank lines skipped) so both sides agree.
+function crf_parse_cfg($path) {
+  $out = [];
+  if (!is_file($path)) return $out;
+  foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+    $line = trim($line);
+    if ($line === '' || $line[0] === '#' || strpos($line, '=') === false) continue;
+    [$k, $v] = explode('=', $line, 2);
+    $k = trim($k);
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $k)) continue;
+    $v = trim($v);
+    if (strlen($v) >= 2 && (($v[0] === '"' && substr($v, -1) === '"') || ($v[0] === "'" && substr($v, -1) === "'"))) {
+      $v = substr($v, 1, -1);
+    }
+    $out[$k] = $v;
+  }
+  return $out;
+}
+
+$profiles = crf_list_profiles($cfgdir, $plugin);
+$profile  = trim($_GET['profile'] ?? 'default');
+if (!crf_valid_profile($profile) || !in_array($profile, $profiles, true)) $profile = 'default';
+$isDefaultProfile = ($profile === 'default');
+
 /* parse_plugin_cfg reads /boot/config/plugins/$plugin/$plugin.cfg (empty [] if
    absent). Defaults are NOT stored on flash — they live in $defaults below, so
-   the flash cfg only ever holds what the user actually changed. */
-$cfg      = parse_plugin_cfg($plugin);
-$has_token= file_exists("/boot/config/plugins/$plugin/token");
+   the flash cfg only ever holds what the user actually changed. Non-default
+   profiles read their own <profile>.cfg the same way. */
+$cfg        = $isDefaultProfile ? parse_plugin_cfg($plugin) : crf_parse_cfg("$cfgdir/$profile.cfg");
+$cfgFileRel = $isDefaultProfile ? "$plugin/$plugin.cfg" : "$plugin/$profile.cfg";
+$tokenPath  = $isDefaultProfile ? "$cfgdir/token" : "$cfgdir/$profile.token";
+$has_token  = file_exists($tokenPath);
+$tokenInherited = !$has_token && !$isDefaultProfile && file_exists("$cfgdir/token");
 $csrf     = $var['csrf_token'] ?? '';
 /* Single source of truth for every form field's default. Drives both the
    rendered fallback (via crf_g/crf_sel) and the client-side "Reset to defaults"
@@ -29,8 +78,9 @@ $defaults = [
 ];
 $patScope = (($cfg['GH_SCOPE'] ?? $defaults['GH_SCOPE']) === 'org') ? 'repo,admin:org' : 'repo';
 $patUrl   = 'https://github.com/settings/tokens/new?description=Unraid+CI+Runner+Farm&scopes='.$patScope;
-$dfFile   = "/boot/config/plugins/$plugin/Dockerfile";
+$dfFile   = $isDefaultProfile ? "$cfgdir/Dockerfile" : "$cfgdir/$profile.Dockerfile";
 if (!is_file($dfFile)) $dfFile = "/usr/local/emhttp/plugins/$plugin/default.Dockerfile";
+$builtinImageTag = $isDefaultProfile ? "ci-runner-farm-runner:latest" : "ci-runner-farm-runner-$profile:latest";
 $dockerfile = is_file($dfFile) ? file_get_contents($dfFile) : '';
 /* $defaults is authoritative: the inline $d args at call sites are a fallback
    for any key not listed above (there are none today). */
@@ -40,8 +90,23 @@ if (!function_exists('crf_sel')) { function crf_sel($cfg,$k,$val,$d=''){ global 
 <link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
 <script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
 
+<div id="crf-profiles" style="margin:8px 0 14px 0">
+  <strong>Fleet profile:</strong>
+  &nbsp;
+  <span id="crf-profile-tabs">
+  <?php foreach ($profiles as $p): $active = ($p === $profile); ?>
+    <a href="?profile=<?=urlencode($p)?>" style="display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:4px;text-decoration:none;<?= $active ? 'background:#3a7;color:#fff;font-weight:bold' : 'background:#eee;color:#333' ?>"><?=htmlspecialchars($p, ENT_QUOTES)?></a>
+  <?php endforeach; ?>
+  </span>
+  <input type="button" value="+ Add profile" onclick="crfAddProfile()" style="width:auto">
+  <?php if (!$isDefaultProfile): ?>
+  <input type="button" value="Delete this profile" onclick="crfDeleteProfile()" style="width:auto">
+  <?php endif; ?>
+  <div style="font-size:12px;color:#888;margin-top:4px">Each profile is an independent fleet: its own GitHub target, runner count, labels, caches, and Dockerfile. "default" is the original single-fleet setup and can't be deleted.</div>
+</div>
+
 <form markdown="1" name="ci_runner_farm" method="POST" action="/update.php" target="progressFrame">
-<input type="hidden" name="#file" value="ci-runner-farm/ci-runner-farm.cfg">
+<input type="hidden" name="#file" value="<?=htmlspecialchars($cfgFileRel, ENT_QUOTES)?>">
 
 ### GitHub
 
@@ -322,8 +387,8 @@ _(Autoscale: scale-down grace)_:
 <hr>
 <div>
 <p><strong>GitHub token (PAT)</strong> &nbsp;<a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a><br>
-Stored at <code>/boot/config/plugins/ci-runner-farm/token</code> (chmod 600), never in ci-runner-farm.cfg.
-Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' ?></strong></p>
+Stored at <code><?=htmlspecialchars($tokenPath, ENT_QUOTES)?></code> (chmod 600), never in a <code>.cfg</code> file.
+Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : ($tokenInherited ? 'not set (using default profile&#39;s token)' : 'not set') ?></strong></p>
 <p>
   <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)" style="width:28em">
   <input type="button" value="Save token" onclick="crfSetToken()">
@@ -341,7 +406,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <hr>
 <div id="crf-sec" style="display:none;margin:8px 0;padding:10px 12px;border-radius:4px;background:#fff4e5;color:#7a4a00;border:1px solid #ffce85;font-size:13px;line-height:1.4;font-weight:bold"></div>
 <div id="crf-warn" style="display:none;margin:8px 0;padding:10px 12px;border-radius:4px;background:#fdecea;color:#7a1c14;border:1px solid #f5c2bd;font-size:13px;line-height:1.4"></div>
-<p><strong>Fleet control</strong></p>
+<p><strong>Fleet control</strong> &mdash; profile: <code><?=htmlspecialchars($profile, ENT_QUOTES)?></code></p>
 <p>
   <input type="button" value="Start" onclick="crfAction('start')">
   <input type="button" value="Stop" onclick="crfAction('stop')">
@@ -359,7 +424,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <div id="crf-log" style="white-space:pre-wrap;font-family:monospace;font-size:12px;min-height:120px;max-height:220px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;border-radius:4px;margin-top:8px"><span style="color:#888">Output from fleet actions and image builds appears here.</span></div>
 
 <hr>
-<p><strong>Runner image builder</strong> &mdash; edit the Dockerfile for the built-in runner image (add apt packages, tools, browsers), Save, then Build. It's tagged <code>ci-runner-farm-runner:latest</code>; set <em>Image source</em> to <strong>Built-in</strong> and restart the fleet to use a new build. Build output streams to the log above.</p>
+<p><strong>Runner image builder</strong> &mdash; edit the Dockerfile for this profile's built-in runner image (add apt packages, tools, browsers), Save, then Build. It's tagged <code><?=htmlspecialchars($builtinImageTag, ENT_QUOTES)?></code>; set <em>Image source</em> to <strong>Built-in</strong> and restart the fleet to use a new build. Build output streams to the log above.</p>
 <textarea id="crf-dockerfile" rows="14" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px"><?=htmlspecialchars($dockerfile, ENT_QUOTES)?></textarea>
 <p>
   <input type="button" value="Save Dockerfile" onclick="crfSaveDf()">
@@ -378,6 +443,7 @@ Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : 'not set' 
 <script>
 const CRF_CSRF = "<?=$csrf?>";
 const CRF_URL  = "/plugins/ci-runner-farm/include/exec.php";
+const CRF_PROFILE = "<?=htmlspecialchars($profile, ENT_QUOTES)?>";
 const CRF_DEFAULTS = <?=json_encode($defaults)?>;
 // Reset the visible form fields to their built-in defaults. Client-side only —
 // nothing is written to flash until the user clicks Apply.
@@ -385,10 +451,29 @@ function crfResetDefaults(){
   for (const k in CRF_DEFAULTS){ const el=document.getElementsByName(k)[0]; if(el) el.value=CRF_DEFAULTS[k]; }
   crfImgSrc();   // re-sync the remote-only field visibility to the reset Image source
 }
+// Every fleet-control/config action is scoped to the active profile — injected
+// here once so every crfPost() call site below stays untouched.
 function crfPost(p){
   p.csrf_token = CRF_CSRF;
+  if (p.profile === undefined) p.profile = CRF_PROFILE;
   return fetch(CRF_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:Object.entries(p).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')}).then(r=>r.json());
+}
+function crfAddProfile(){
+  const name = prompt('New profile name (letters, numbers, hyphens, max 32 chars):');
+  if (!name) return;
+  crfPost({action:'add-profile', new_profile:name}).then(o=>{
+    if (o.ok) { window.location.href = '?profile='+encodeURIComponent(name); }
+    else { alert('Could not add profile: '+(o.error||'unknown error')); }
+  });
+}
+function crfDeleteProfile(){
+  if (CRF_PROFILE === 'default') return;
+  if (!confirm('Delete profile "'+CRF_PROFILE+'"? This removes its config, token, and Dockerfile. The fleet must already be stopped.')) return;
+  crfPost({action:'delete-profile', del_profile:CRF_PROFILE}).then(o=>{
+    if (o.ok) { window.location.href = '?profile=default'; }
+    else { alert('Could not delete profile: '+(o.error||'unknown error')); }
+  });
 }
 function crfLog(o){ document.getElementById('crf-log').textContent = (o.log||JSON.stringify(o)); }
 function crfAction(a){ crfPost({action:a}).then(o=>{crfLog(o); crfRefresh();}); }

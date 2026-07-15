@@ -185,8 +185,18 @@ for the full picture.
 Everything in the UI maps to the control script:
 
 ```
-include/runner-farm.sh {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*}
+include/runner-farm.sh {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-*|list-profiles} [PROFILE]
 ```
+
+---
+
+## Multiple fleets (profiles)
+
+The plugin can run more than one independent fleet — different repos, labels,
+runner counts, caches, and Dockerfiles — side by side on the same box. See
+[PROFILES.md](PROFILES.md) for how to switch between profiles in the UI, what
+gets namespaced per profile, and the CLI form above. Existing single-fleet
+installs are unaffected — that's the `default` profile.
 
 ---
 

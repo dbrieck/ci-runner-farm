@@ -5,29 +5,96 @@
 # warm shared caches on a fast pool, resource-capped so builds coexist with
 # the host and the other workloads.
 #
-# Subcommands:
-#   start            provision RUNNER_COUNT runner containers
-#   stop             stop+remove all managed runner containers
-#   restart          stop then start
-#   scale <N>        grow/shrink the fleet to N runners
-#   status           human-readable fleet table
-#   status-json      machine-readable status for the web UI
-#   logs <i>         tail logs for runner i
-#   validate         dry-provision one container (no GitHub token needed) to
-#                    prove mounts/limits/image on this box, then remove it
-#   prune-cache      clear the shared cache root
+# Subcommands (all take an optional trailing PROFILE arg; default: "default"):
+#   start [PROFILE]            provision RUNNER_COUNT runner containers
+#   stop [PROFILE]             stop+remove all managed runner containers
+#   restart [PROFILE]          stop then start
+#   scale <N> [PROFILE]        grow/shrink the fleet to N runners
+#   status [PROFILE]           human-readable fleet table
+#   status-json [PROFILE]      machine-readable status for the web UI
+#   logs <i> [n] [PROFILE]     tail logs for runner i
+#   validate [PROFILE]         dry-provision one container (no GitHub token needed) to
+#                              prove mounts/limits/image on this box, then remove it
+#   prune-cache [PROFILE]      clear this profile's cache root
+#
+# A PROFILE is a named fleet: its own config, Dockerfile, token, and cache
+# namespace, so multiple independent fleets can run concurrently on the same
+# box. "default" is the original single-fleet behavior and always exists.
 ###############################################################################
 set -uo pipefail
 
 PLUGIN="ci-runner-farm"
 CFGDIR="/boot/config/plugins/${PLUGIN}"
-CFG="${CFGDIR}/${PLUGIN}.cfg"
-TOKEN_FILE="${CFGDIR}/token"
-REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"
 MANAGED_LABEL="net.unraid.ci-runner-farm.managed=true"
-NAME_PREFIX="ci-runner"
+PROFILE_LABEL="net.unraid.ci-runner-farm.profile"
 
-# ---- defaults (overridden by ci-runner-farm.cfg) ---------------------------
+# ---- profile resolution -----------------------------------------------------
+# Every subcommand takes an optional trailing PROFILE argument (default:
+# "default"). Because a few subcommands (scale, logs) already take their own
+# positional args, the profile's position depends on the subcommand — resolved
+# here, before anything else runs, so every path below (cfg file, token,
+# Dockerfile, container names, caches...) can be namespaced by it.
+validate_profile_name() {
+  case "$1" in
+    ''|*[!A-Za-z0-9-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 32 ]
+}
+
+SUBCMD="${1:-status}"
+case "$SUBCMD" in
+  scale) PROFILE="${3:-default}" ;;
+  logs)  PROFILE="${4:-default}" ;;
+  start|stop|restart|status|status-json|validate|build-image|prune-cache|boot-autostart|\
+  autoscale-daemon|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|\
+  imageupdate-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status)
+    PROFILE="${2:-default}" ;;
+  *) PROFILE="default" ;;
+esac
+validate_profile_name "$PROFILE" || { echo "[ci-runner-farm] ERROR: invalid profile name '$PROFILE' (alphanumeric + hyphens, max 32 chars)" >&2; exit 1; }
+
+# ---- profile-namespaced paths / names --------------------------------------
+# The "default" profile keeps every original filename/container-name exactly
+# as-is (pre-multi-fleet), so existing single-fleet installs need zero config
+# changes. Any other profile gets its own <profile>-suffixed files and a
+# ci-runner-<profile>-N container name, so multiple fleets never collide.
+TOKEN_FILE_GLOBAL="${CFGDIR}/token"                 # profile-less fallback token
+REGISTRY_TOKEN_FILE="${CFGDIR}/registry-token"      # registry auth is host-wide, shared by all profiles
+if [ "$PROFILE" = "default" ]; then
+  CFG="${CFGDIR}/${PLUGIN}.cfg"
+  TOKEN_FILE="${CFGDIR}/token"
+  DOCKERFILE_FILE="${CFGDIR}/Dockerfile"
+  BUILD_LOG="${CFGDIR}/build.log"
+  AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
+  AUTOSCALE_LOG="${CFGDIR}/autoscale.log"
+  AUTOSCALE_STATE="${CFGDIR}/autoscale.state"
+  IMAGEUPDATE_PID="${CFGDIR}/imageupdate.pid"
+  IMAGEUPDATE_LOG="${CFGDIR}/imageupdate.log"
+  SECURITY_CACHE="${CFGDIR}/security-warn.cache"
+  NAME_PREFIX="ci-runner"
+  MIRROR_NAME_DEFAULT="ci-runner-mirror"
+  RUNNER_NETWORK_DEFAULT="ci-runner-net"
+  FW_TAG="ci-runner-farm"
+  BUILTIN_IMAGE_DEFAULT="ci-runner-farm-runner:latest"
+else
+  CFG="${CFGDIR}/${PROFILE}.cfg"
+  TOKEN_FILE="${CFGDIR}/${PROFILE}.token"
+  DOCKERFILE_FILE="${CFGDIR}/${PROFILE}.Dockerfile"
+  BUILD_LOG="${CFGDIR}/build-${PROFILE}.log"
+  AUTOSCALE_PID="${CFGDIR}/autoscale-${PROFILE}.pid"
+  AUTOSCALE_LOG="${CFGDIR}/autoscale-${PROFILE}.log"
+  AUTOSCALE_STATE="${CFGDIR}/autoscale-${PROFILE}.state"
+  IMAGEUPDATE_PID="${CFGDIR}/imageupdate-${PROFILE}.pid"
+  IMAGEUPDATE_LOG="${CFGDIR}/imageupdate-${PROFILE}.log"
+  SECURITY_CACHE="${CFGDIR}/security-warn-${PROFILE}.cache"
+  NAME_PREFIX="ci-runner-${PROFILE}"
+  MIRROR_NAME_DEFAULT="ci-runner-mirror-${PROFILE}"
+  RUNNER_NETWORK_DEFAULT="ci-runner-net-${PROFILE}"
+  FW_TAG="ci-runner-farm-${PROFILE}"
+  BUILTIN_IMAGE_DEFAULT="ci-runner-farm-runner-${PROFILE}:latest"
+fi
+
+# ---- defaults (overridden by <profile>.cfg) --------------------------------
 GH_SCOPE="repo"                       # repo | org
 GH_OWNER="unraid"
 GH_REPOS="unraid/repo-a unraid/repo-b"
@@ -39,7 +106,7 @@ RUNNER_MEMORY="16g"                   # per-runner memory cap (kept: memory isn'
 CACHE_ROOT="/mnt/github-runner"
 WORK_TMPFS_SIZE="8g"                  # empty => bind workdir to pool instead of RAM
 IMAGE_SOURCE="builtin"                # builtin = run the locally-built image; remote = pull IMAGE from a registry
-BUILTIN_IMAGE="ci-runner-farm-runner:latest"  # tag produced by the in-plugin image builder (build-image)
+BUILTIN_IMAGE="$BUILTIN_IMAGE_DEFAULT"  # tag produced by the in-plugin image builder (build-image)
 IMAGE=""                              # remote image ref, used when IMAGE_SOURCE=remote (e.g. ghcr.io/org/img:tag)
 EPHEMERAL="false"                     # true => runner deregisters after each job
 RUN_AS_ROOT="false"                   # false => jobs run as non-root 'runner' (sudo+docker groups), like
@@ -53,7 +120,7 @@ DIND="true"                           # docker-in-docker: each runner gets its o
                                       # Fixes GitHub Actions services: networking + 'port already allocated' collisions.
 SHARED_IMAGE_CACHE="true"             # run a shared pull-through registry mirror so every DinD runner
                                       # reuses pulled images (postgres, etc.) instead of each pulling cold.
-MIRROR_NAME="ci-runner-mirror"        # cache persists on the pool across restarts.
+MIRROR_NAME="$MIRROR_NAME_DEFAULT"    # cache persists on the pool across restarts.
 MIRROR_PORT="5000"
 # ---- network isolation -----------------------------------------------------
 NETWORK_ISOLATION="off"               # off     = runners on the default docker bridge (legacy).
@@ -62,9 +129,9 @@ NETWORK_ISOLATION="off"               # off     = runners on the default docker 
                                       # strict  = isolate + DOCKER-USER egress rules that block the
                                       #           runners from the Unraid host + your LAN (RFC1918),
                                       #           while still allowing the internet + the shared mirror.
-RUNNER_NETWORK="ci-runner-net"        # name of the dedicated bridge (created when isolation != off).
+RUNNER_NETWORK="$RUNNER_NETWORK_DEFAULT"  # name of the dedicated bridge (created when isolation != off).
                                       # Docker auto-allocates its subnet; we read it back for the rules.
-FW_TAG="ci-runner-farm"               # iptables comment tag used to find/remove our DOCKER-USER rules
+                                      # (FW_TAG is set above, per-profile, alongside the other profile paths.)
 # ---- private registry auth: docker login so the host can pull a private IMAGE
 REGISTRY_SERVER=""                     # e.g. ghcr.io — registry to docker login (empty = skip)
 REGISTRY_USERNAME=""                   # registry username (password/token stored in registry-token file)
@@ -119,20 +186,42 @@ load_cfg() {
   done < "$CFG"
 }
 
+# Load this profile's token, falling back to the global (profile-less) token
+# file when the profile has none of its own — so a fresh profile works with
+# the same PAT already configured for "default" until given its own.
+load_token() {
+  [ -n "$ACCESS_TOKEN" ] && return 0
+  if [ -f "$TOKEN_FILE" ]; then
+    ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  elif [ "$PROFILE" != "default" ] && [ -f "$TOKEN_FILE_GLOBAL" ]; then
+    ACCESS_TOKEN="$(cat "$TOKEN_FILE_GLOBAL" 2>/dev/null)"
+  fi
+}
+
 load_cfg
-[ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+load_token
 [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
-AUTOSCALE_PID="${CFGDIR}/autoscale.pid"
-IMAGEUPDATE_PID="${CFGDIR}/imageupdate.pid"
-SECURITY_CACHE="${CFGDIR}/security-warn.cache"   # cached public-repo warning (TTL below), so the
+# Cache/DinD-data/work paths are namespaced under the profile so two profiles
+# sharing the same CACHE_ROOT (e.g. a freshly cloned profile) never collide.
+# "default" keeps using CACHE_ROOT directly — zero migration for existing installs.
+if [ "$PROFILE" = "default" ]; then
+  PROFILE_CACHE_ROOT="$CACHE_ROOT"
+else
+  PROFILE_CACHE_ROOT="${CACHE_ROOT%/}/${PROFILE}"
+fi
 SECURITY_TTL="300"                               # UI's 5s status poll never hammers the GitHub API
 
 log()  { echo "[ci-runner-farm] $*"; }
 err()  { echo "[ci-runner-farm] ERROR: $*" >&2; }
 host() { hostname -s; }
 
+# Scoped to THIS profile's containers only: NAME_PREFIX already encodes the
+# profile (ci-runner-<profile>-N, or ci-runner-N for "default"), and the exact
+# ^...-[0-9]+$ anchor stops e.g. "default"'s ci-runner-N from matching
+# "ci-runner-thisprop-N" (a longer prefix) and vice versa.
 managed_names() {
-  docker ps -a --filter "label=${MANAGED_LABEL}" --format '{{.Names}}' | sort -V
+  docker ps -a --filter "label=${MANAGED_LABEL}" --format '{{.Names}}' \
+    | grep -E "^${NAME_PREFIX}-[0-9]+\$" | sort -V
 }
 
 current_count() { managed_names | grep -c . ; }
@@ -204,7 +293,7 @@ autoscale_tick() {
   reap_dead_runners        # drop dead containers first so idle accounting is real
   local cur busy idle statef over target
   cur=$(current_count); busy=$(busy_count); idle=$((cur - busy))
-  statef="${CFGDIR}/autoscale.state"; over=0
+  statef="$AUTOSCALE_STATE"; over=0
   [ -f "$statef" ] && over=$(cat "$statef" 2>/dev/null || echo 0)
 
   if [ "$idle" -lt "$AUTOSCALE_MIN_IDLE" ] && [ "$cur" -lt "$AUTOSCALE_MAX" ]; then
@@ -227,7 +316,7 @@ autoscale_daemon() {
   log "autoscale daemon up (min=$AUTOSCALE_MIN max=$AUTOSCALE_MAX buffer=$AUTOSCALE_MIN_IDLE step=$AUTOSCALE_STEP every ${AUTOSCALE_INTERVAL}s)"
   while true; do
     load_cfg
-    [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+    load_token
     [ "$AUTOSCALE" = "true" ] || { log "autoscale disabled -> daemon exit"; rm -f "$AUTOSCALE_PID"; break; }
     autoscale_tick
     sleep "${AUTOSCALE_INTERVAL:-30}"
@@ -237,14 +326,14 @@ autoscale_daemon() {
 autoscale_start() {
   [ "$AUTOSCALE" = "true" ] || return 0
   autoscale_stop
-  nohup "$0" autoscale-daemon >>"${CFGDIR}/autoscale.log" 2>&1 &
+  nohup "$0" autoscale-daemon "$PROFILE" >>"$AUTOSCALE_LOG" 2>&1 &
   echo $! > "$AUTOSCALE_PID"
   log "autoscale daemon started (pid $(cat "$AUTOSCALE_PID"))"
 }
 autoscale_stop() {
   [ -f "$AUTOSCALE_PID" ] && kill "$(cat "$AUTOSCALE_PID")" 2>/dev/null
   rm -f "$AUTOSCALE_PID"
-  pkill -f "runner-farm.sh autoscale-daemon" 2>/dev/null || true
+  pkill -f "runner-farm.sh autoscale-daemon $PROFILE\$" 2>/dev/null || true
 }
 autoscale_status() {
   if [ -f "$AUTOSCALE_PID" ] && kill -0 "$(cat "$AUTOSCALE_PID" 2>/dev/null)" 2>/dev/null; then
@@ -338,7 +427,7 @@ imageupdate_daemon() {
   log "image-update daemon up (every ${IMAGE_AUTOUPDATE_INTERVAL}s, drain-timeout ${IMAGE_DRAIN_TIMEOUT}s)"
   while true; do
     load_cfg
-    [ -z "$ACCESS_TOKEN" ] && [ -f "$TOKEN_FILE" ] && ACCESS_TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+    load_token
     [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
     [ "$IMAGE_AUTOUPDATE" = "true" ] || { log "image auto-update disabled -> daemon exit"; rm -f "$IMAGEUPDATE_PID"; break; }
     imageupdate_tick
@@ -349,14 +438,14 @@ imageupdate_daemon() {
 imageupdate_start() {
   [ "$IMAGE_AUTOUPDATE" = "true" ] || return 0
   imageupdate_stop
-  nohup "$0" imageupdate-daemon >>"${CFGDIR}/imageupdate.log" 2>&1 &
+  nohup "$0" imageupdate-daemon "$PROFILE" >>"$IMAGEUPDATE_LOG" 2>&1 &
   echo $! > "$IMAGEUPDATE_PID"
   log "image-update daemon started (pid $(cat "$IMAGEUPDATE_PID"))"
 }
 imageupdate_stop() {
   [ -f "$IMAGEUPDATE_PID" ] && kill "$(cat "$IMAGEUPDATE_PID")" 2>/dev/null
   rm -f "$IMAGEUPDATE_PID"
-  pkill -f "runner-farm.sh imageupdate-daemon" 2>/dev/null || true
+  pkill -f "runner-farm.sh imageupdate-daemon $PROFILE\$" 2>/dev/null || true
 }
 imageupdate_status() {
   if [ -f "$IMAGEUPDATE_PID" ] && kill -0 "$(cat "$IMAGEUPDATE_PID" 2>/dev/null)" 2>/dev/null; then
@@ -536,11 +625,11 @@ registry_login() {
 }
 
 ensure_dirs() {
-  mkdir -p "$CACHE_ROOT/work"
+  mkdir -p "$PROFILE_CACHE_ROOT/work"
   local m dir
   for m in $CACHE_MOUNTS; do
     [ -n "$m" ] || continue
-    dir="$CACHE_ROOT/${m%%:*}"
+    dir="$PROFILE_CACHE_ROOT/${m%%:*}"
     mkdir -p "$dir"
     # Unless runners run as root, they write caches as the non-root 'runner' user
     # (RUNNER_UID:RUNNER_GID). Make the host cache dirs owned by it — chown only
@@ -585,7 +674,7 @@ on_expected_network() {
 # and reached via host.docker.internal (the legacy path).
 ensure_mirror() {
   [ "$SHARED_IMAGE_CACHE" = "true" ] && [ "$DIND" = "true" ] || return 0
-  mkdir -p "$CACHE_ROOT/registry-mirror"
+  mkdir -p "$PROFILE_CACHE_ROOT/registry-mirror"
   # If the mirror is up but on the wrong network for the current mode (operator
   # switched NETWORK_ISOLATION without a full Stop/Start), drop it so it's recreated
   # below on the right network — otherwise runners can't reach it by name and strict's
@@ -607,7 +696,7 @@ ensure_mirror() {
     fi
     docker run -d --restart=unless-stopped --name "$MIRROR_NAME" \
       "${netargs[@]}" \
-      -v "$CACHE_ROOT/registry-mirror:/var/lib/registry" \
+      -v "$PROFILE_CACHE_ROOT/registry-mirror:/var/lib/registry" \
       -e REGISTRY_PROXY_REMOTEURL="https://registry-1.docker.io" \
       registry:2 >/dev/null 2>&1 || err "could not start $MIRROR_NAME"
   fi
@@ -629,7 +718,7 @@ write_dind_config() {
     if [ "$NETWORK_ISOLATION" != "off" ]; then ep="${MIRROR_NAME}:5000"; else ep="host.docker.internal:${MIRROR_PORT}"; fi
     mirror=$(printf ',"registry-mirrors":["http://%s"],"insecure-registries":["%s"]' "$ep" "$ep")
   fi
-  printf '{"storage-driver":"overlay2"%s}\n' "$mirror" > "$CACHE_ROOT/dind-daemon.json"
+  printf '{"storage-driver":"overlay2"%s}\n' "$mirror" > "$PROFILE_CACHE_ROOT/dind-daemon.json"
 }
 
 # --- strict-mode egress firewall (DOCKER-USER) ------------------------------
@@ -712,6 +801,7 @@ build_args() {
     --pids-limit=4096
     --label "${MANAGED_LABEL%=*}=true"
     --label "net.unraid.ci-runner-farm.index=${idx}"
+    --label "${PROFILE_LABEL}=${PROFILE}"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
     -e EPHEMERAL="$EPHEMERAL"
@@ -725,7 +815,7 @@ build_args() {
   # warm caches mounted into the runner, configurable via CACHE_MOUNTS
   local m
   for m in $CACHE_MOUNTS; do
-    [ -n "$m" ] && ARGS+=( -v "$CACHE_ROOT/${m%%:*}:${m#*:}" )
+    [ -n "$m" ] && ARGS+=( -v "$PROFILE_CACHE_ROOT/${m%%:*}:${m#*:}" )
   done
   [ -n "$RUNNER_CPUS" ]   && ARGS+=( --cpus="$RUNNER_CPUS" )
   [ -n "$RUNNER_MEMORY" ] && ARGS+=( --memory="$RUNNER_MEMORY" )
@@ -739,18 +829,18 @@ build_args() {
     # /var/lib/docker onto the runner's overlay rootfs, so overlay2 (and buildx's
     # BuildKit) stack overlay-on-overlay and fail with "mount overlay ...
     # invalid argument". CACHE_ROOT must be a pool, not FUSE (check_cache_root).
-    mkdir -p "$CACHE_ROOT/docker/$name"
-    ARGS+=( -v "$CACHE_ROOT/docker/$name:/var/lib/docker" )
+    mkdir -p "$PROFILE_CACHE_ROOT/docker/$name"
+    ARGS+=( -v "$PROFILE_CACHE_ROOT/docker/$name:/var/lib/docker" )
     # inner daemon.json: storage-driver + optional pull-through mirror
-    ARGS+=( -v "$CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
+    ARGS+=( -v "$PROFILE_CACHE_ROOT/dind-daemon.json:/etc/docker/daemon.json:ro" )
     # Persisted DinD diagnostics dir (kept by remove_runner, unlike the data root):
     # the runner image's wait-docker.sh snapshots inner-daemon state (storage driver,
     # Native Overlay Diff, backing fs, userxattr, uid_map) here and mirrors the inner
     # dockerd log, so a layer-extraction failure (e.g. the whiteout "operation not
     # permitted" mknod seen on ZFS-backed overlay2 under the services: workload) leaves
-    # a post-mortem trail off the ephemeral container. Inspect $CACHE_ROOT/dind-logs/<runner>.
-    mkdir -p "$CACHE_ROOT/dind-logs/$name"
-    ARGS+=( -v "$CACHE_ROOT/dind-logs/$name:/var/log/dind" )
+    # a post-mortem trail off the ephemeral container. Inspect $PROFILE_CACHE_ROOT/dind-logs/<runner>.
+    mkdir -p "$PROFILE_CACHE_ROOT/dind-logs/$name"
+    ARGS+=( -v "$PROFILE_CACHE_ROOT/dind-logs/$name:/var/log/dind" )
     # Legacy mirror path: reach the host-published mirror via host.docker.internal.
     # Under isolation the mirror is on the dedicated bridge and reached by name, so
     # host-gateway isn't needed (and is blocked in strict) — skip it.
@@ -761,8 +851,8 @@ build_args() {
   if [ -n "$WORK_TMPFS_SIZE" ]; then
     ARGS+=( --tmpfs "/_work:rw,exec,size=${WORK_TMPFS_SIZE}" )
   else
-    mkdir -p "$CACHE_ROOT/work/$name"
-    ARGS+=( -v "$CACHE_ROOT/work/$name:/_work" )
+    mkdir -p "$PROFILE_CACHE_ROOT/work/$name"
+    ARGS+=( -v "$PROFILE_CACHE_ROOT/work/$name:/_work" )
   fi
   local scope_target=""
   if [ "$GH_SCOPE" = "org" ]; then
@@ -868,7 +958,7 @@ remove_runner() {
   deregister_runner_api "$c"                  # host-side (PAT stays off the container)
   docker stop -t 30 "$c" >/dev/null 2>&1
   docker rm "$c" >/dev/null 2>&1
-  rm -rf "$CACHE_ROOT/docker/$c" 2>/dev/null || true
+  rm -rf "$PROFILE_CACHE_ROOT/docker/$c" 2>/dev/null || true
 }
 
 # Full teardown: daemons, runner containers, and the shared pull-through mirror.
@@ -1000,27 +1090,29 @@ cmd_validate() {
   echo "--- docker.sock reachable inside container ---"
   docker exec "$name" sh -c '[ -S /var/run/docker.sock ] && echo "yes: docker.sock present" || echo "no socket"' 2>/dev/null
   docker rm -f "$name" >/dev/null 2>&1
-  rm -rf "$CACHE_ROOT/docker/$name" 2>/dev/null || true
+  rm -rf "$PROFILE_CACHE_ROOT/docker/$name" 2>/dev/null || true
   log "validate: OK (container removed). Provisioning mechanics verified on this host."
 }
 
-# Clear the cache root. Guard against a misconfigured CACHE_ROOT that points at a
-# system dir or a bare pool/share root — 'rm -rf /mnt/user/*' would wipe every
-# user share. The ':?' already stops an empty value; this blocks the dangerous
-# non-empty ones too. Refuses anything shallower than /mnt/<name>/... or /mnt/<pool>.
+# Clear this profile's cache root. Guard against a misconfigured CACHE_ROOT that
+# points at a system dir or a bare pool/share root — 'rm -rf /mnt/user/*' would
+# wipe every user share. The ':?' already stops an empty value; this blocks the
+# dangerous non-empty ones too. Refuses anything shallower than /mnt/<name>/... or
+# /mnt/<pool>. Operates on PROFILE_CACHE_ROOT, not the raw CACHE_ROOT setting, so
+# pruning one profile never touches another profile's caches on the same pool.
 cmd_prune_cache() {
-  # Strip ALL trailing slashes, not just one: "${CACHE_ROOT%/}" leaves "/mnt/user//"
+  # Strip ALL trailing slashes, not just one: "${root%/}" leaves "/mnt/user//"
   # as "/mnt/user/", which slips past the exact blocklist into the /mnt/* allow arm
   # and then 'rm -rf /mnt/user/*' wipes every share. Normalize exhaustively and use
   # the normalized value for BOTH the guard and the rm.
-  local root="$CACHE_ROOT"
+  local root="$PROFILE_CACHE_ROOT"
   while [ "${root: -1}" = "/" ]; do root="${root%/}"; done
   case "$root" in
     ""|"/"|"/mnt"|"/mnt/user"|"/mnt/user0"|"/mnt/disks"|"/mnt/addons"|"/mnt/rootshare" \
     |"/boot"|"/boot/"*|"/usr"|"/usr/"*|"/etc"|"/etc/"*|"/var"|"/var/"*|"/root"|"/root/"*|"/bin"*|"/sbin"*|"/lib"*)
-      err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is a system dir or share root"; return 1 ;;
+      err "refusing to prune-cache: CACHE_ROOT='$root' is a system dir or share root"; return 1 ;;
     /mnt/*) : ;;   # /mnt/<pool>[/...] — the intended shape
-    *) err "refusing to prune-cache: CACHE_ROOT='$CACHE_ROOT' is not under /mnt"; return 1 ;;
+    *) err "refusing to prune-cache: CACHE_ROOT='$root' is not under /mnt"; return 1 ;;
   esac
   rm -rf "${root:?}/"* && log "cache cleared: $root"
 }
@@ -1028,7 +1120,7 @@ cmd_prune_cache() {
 cmd_build_image() {
   # Build the runner image from the editable Dockerfile. Uses a CLEAN temp
   # context (only the Dockerfile) so the token/config never enter the build.
-  local df="$CFGDIR/Dockerfile"
+  local df="$DOCKERFILE_FILE"
   [ -f "$df" ] || df="/usr/local/emhttp/plugins/$PLUGIN/default.Dockerfile"
   [ -f "$df" ] || { err "no Dockerfile found"; return 1; }
   local ctx; ctx="$(mktemp -d)"
@@ -1053,6 +1145,20 @@ cmd_build_image() {
 # install waits for the user); cmd_start restarts exited runners, skips running
 # ones, and (re)starts the autoscale daemon, so the fleet self-heals after a
 # reboot OR a Docker restart.
+# Enumerate configured profile names (always includes "default"), one per
+# line — used by the install/boot/shutdown event hooks so they can loop over
+# every fleet instead of only the default one.
+cmd_list_profiles() {
+  echo "default"
+  local f name
+  for f in "${CFGDIR}"/*.cfg; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .cfg)"
+    [ "$name" = "$PLUGIN" ] && continue   # that file IS the default profile's config
+    echo "$name"
+  done
+}
+
 cmd_boot_autostart() {
   [ -n "$ACCESS_TOKEN" ] || { log "boot-autostart: no token configured yet — skipping"; return 0; }
   local i
@@ -1088,5 +1194,6 @@ case "${1:-status}" in
   imageupdate-start)  imageupdate_start ;;
   imageupdate-stop)   imageupdate_stop ;;
   imageupdate-status) imageupdate_status ;;
-  *) echo "usage: $0 {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status}"; exit 1 ;;
+  list-profiles)      cmd_list_profiles ;;
+  *) echo "usage: $0 {start|boot-autostart|stop|restart|scale N|status|status-json|logs i|validate|build-image|prune-cache|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status|list-profiles} [PROFILE]"; exit 1 ;;
 esac
