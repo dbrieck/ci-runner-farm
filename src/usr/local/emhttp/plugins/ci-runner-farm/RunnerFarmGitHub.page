@@ -1,0 +1,58 @@
+Menu="RunnerFarm:2"
+Title="GitHub"
+Tag="github"
+---
+<?php require_once "/usr/local/emhttp/plugins/ci-runner-farm/include/page-common.php"; crf_emit_assets(); crf_profile_switcher(); ?>
+
+<form markdown="1" name="ci_runner_farm_github" method="POST" action="/update.php" target="progressFrame">
+<input type="hidden" name="#file" value="<?=htmlspecialchars($cfgFileRel, ENT_QUOTES)?>">
+
+_(GitHub scope)_:
+: <select name="GH_SCOPE">
+  <option value="repo" <?=crf_sel($cfg,'GH_SCOPE','repo','repo')?>>repo (per-repository)</option>
+  <option value="org" <?=crf_sel($cfg,'GH_SCOPE','org','repo')?>>org (organization-wide)</option>
+  </select>
+
+:crf_scope_plug:
+> repo = register runners on specific repositories.
+>
+> org = one shared pool available to every repo in the org (recommended when you have more than one repo).
+:end
+
+_(Org owner)_:
+: <input type="text" name="GH_OWNER" value="<?=crf_g($cfg,'GH_OWNER','unraid')?>">
+
+:crf_owner_plug:
+> GitHub organization name. Used only when scope is org (e.g. unraid).
+:end
+
+_(Target repos)_:
+: <input type="text" name="GH_REPOS" value="<?=crf_g($cfg,'GH_REPOS','unraid/repo-a unraid/repo-b')?>">
+
+:crf_repos_plug:
+> Space-separated owner/repo list, used when scope is repo. Runners are spread across these repos round-robin.
+:end
+
+_(Runner group)_:
+: <input type="text" name="RUNNER_GROUP" value="<?=crf_g($cfg,'RUNNER_GROUP')?>">
+
+:crf_group_plug:
+> Optional runner group (org scope) to restrict which repos may use the pool &mdash; e.g. exclude public repos so fork PRs never run here.
+:end
+
+&nbsp;
+: <input type="submit" name="Apply" value="_(Apply)_" style="width:auto">
+  <input type="button" value="_(Reset to defaults)_" onclick="crfResetDefaults(this)" style="width:auto">
+
+</form>
+
+<div class="crf-panel">
+<p><strong>GitHub token (PAT)</strong> &nbsp;<a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a><br>
+Stored at <code><?=htmlspecialchars($tokenPath, ENT_QUOTES)?></code> (chmod 600), never in a <code>.cfg</code> file.
+Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : ($tokenInherited ? 'not set (using default profile&#39;s token)' : 'not set') ?></strong></p>
+<p>
+  <input type="password" id="crf-token" placeholder="ghp_... (scopes pre-filled by the link)" style="width:28em">
+  <input type="button" value="Save token" onclick="crfSetToken()">
+  <input type="button" value="Clear" onclick="crfClearToken()">
+</p>
+</div>
