@@ -64,7 +64,6 @@ DATE="${DATE:-$(date -u +%Y.%m.%d.%H%M)}"
 
 VERSION="${DATE}.${BUILD_NUMBER}-${INTERNAL_VERSION}"
 RELEASE_TAG="v${INTERNAL_VERSION}"
-PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${NAME}.plg"
 SUPPORT_URL="https://github.com/${REPO}/issues"
 
 # The package is published as a release asset under a version-pinned name so an
@@ -72,8 +71,23 @@ SUPPORT_URL="https://github.com/${REPO}/issues"
 # (update checks find the newest .plg); packageURL is tag-pinned (each .plg
 # fetches exactly its own package). The .tgz itself is NOT committed — CI rebuilds
 # it reproducibly at publish (see make_tgz above); only the .plg is committed.
+#
+# PLUGIN_URL_BASE overrides WHERE both files are served from — for private
+# forks that can't use GitHub release URLs (Unraid downloads anonymously, and
+# private release assets 404). Point it at any static host serving raw bytes,
+# e.g. a public GCS bucket (see scripts/publish-gcs.sh):
+#   PLUGIN_URL_BASE=https://storage.googleapis.com/my-bucket ./build-plg.sh
+# Both the .plg and the version-pinned .tgz are then expected side by side
+# under that base URL. The MD5 pin makes the host location integrity-neutral.
 PACKAGE_NAME="${NAME}-${VERSION}.tgz"
-PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+if [ -n "${PLUGIN_URL_BASE:-}" ]; then
+  PLUGIN_URL_BASE="${PLUGIN_URL_BASE%/}"
+  PLUGIN_URL="${PLUGIN_URL_BASE}/${NAME}.plg"
+  PACKAGE_URL="${PLUGIN_URL_BASE}/${PACKAGE_NAME}"
+else
+  PLUGIN_URL="https://github.com/${REPO}/releases/latest/download/${NAME}.plg"
+  PACKAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
+fi
 
 # Portable MD5 (md5sum on Linux/CI, md5 on macOS/BSD dev boxes).
 md5_of() { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
