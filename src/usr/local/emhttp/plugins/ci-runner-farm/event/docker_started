@@ -21,7 +21,7 @@ CFGDIR="/boot/config/plugins/ci-runner-farm"
 SCRIPT="$PLGDIR/include/runner-farm.sh"
 (
   for p in $("$SCRIPT" list-profiles); do
-    nohup "$SCRIPT" boot-autostart "$p" >>"$CFGDIR/boot.log" 2>&1
+    nohup "$SCRIPT" boot-autostart "$p" >>"$CFGDIR/boot.log" 2>&1 &
   done
 ) &
 true

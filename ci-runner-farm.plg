@@ -61,7 +61,7 @@ chmod 0755 "$PLGDIR/include/runner-farm.sh"
 # configured for a given profile.
 (
   for p in $("$PLGDIR/include/runner-farm.sh" list-profiles); do
-    nohup "$PLGDIR/include/runner-farm.sh" boot-autostart "$p" >>"$CFGDIR/boot.log" 2>&1
+    nohup "$PLGDIR/include/runner-farm.sh" boot-autostart "$p" >>"$CFGDIR/boot.log" 2>&1 &
   done
 ) &
 true

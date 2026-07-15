@@ -146,10 +146,15 @@ chmod 0755 "\$PLGDIR/include/runner-farm.sh"
 # both fall back to built-in defaults, so flash only ever holds what the user set.
 [ -f "\$CFGDIR/Dockerfile" ] || cp "\$PLGDIR/default.Dockerfile" "\$CFGDIR/Dockerfile"
 ( docker pull myoung34/github-runner:latest >/dev/null 2>&1 & ) || true
-# Bring the fleet + autoscaler up. Runs on manual install AND on every boot
-# (rc.local reinstalls plugins), detached so it waits for dockerd+array without
-# blocking. No-op until a GitHub token is configured.
-( nohup "\$PLGDIR/include/runner-farm.sh" boot-autostart >>"\$CFGDIR/boot.log" 2>&1 & ) || true
+# Bring every configured fleet + autoscaler up (not just "default"). Runs on
+# manual install AND on every boot (rc.local reinstalls plugins), detached so
+# it waits for dockerd+array without blocking. No-op until a GitHub token is
+# configured for a given profile.
+(
+  for p in \$("\$PLGDIR/include/runner-farm.sh" list-profiles); do
+    nohup "\$PLGDIR/include/runner-farm.sh" boot-autostart "\$p" >>"\$CFGDIR/boot.log" 2>&1 &
+  done
+) || true
 echo ""
 echo "+=============================================================+"
 echo "| ci-runner-farm ${VERSION} installed.                         "
@@ -164,7 +169,9 @@ echo "+=============================================================+"
 <INLINE><![CDATA[
 PLGDIR="/usr/local/emhttp/plugins/${NAME}"
 CFGDIR="/boot/config/plugins/${NAME}"
-"\$PLGDIR/include/runner-farm.sh" stop 2>/dev/null || true
+for p in \$("\$PLGDIR/include/runner-farm.sh" list-profiles); do
+  "\$PLGDIR/include/runner-farm.sh" stop "\$p" 2>/dev/null || true
+done
 rm -rf "\$PLGDIR"
 # The downloaded package is just a cache; drop it. Config + token stay.
 rm -f "\$CFGDIR"/${NAME}-*.tgz

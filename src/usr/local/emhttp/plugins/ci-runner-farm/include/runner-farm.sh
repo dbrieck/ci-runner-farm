@@ -12,7 +12,9 @@
 #   scale <N> [PROFILE]        grow/shrink the fleet to N runners
 #   status [PROFILE]           human-readable fleet table
 #   status-json [PROFILE]      machine-readable status for the web UI
-#   logs <i> [n] [PROFILE]     tail logs for runner i
+#   logs <i> [n] [PROFILE]     tail logs for runner i (a non-numeric 3rd arg is
+#                              treated as PROFILE, so "logs 1 myprofile" works
+#                              without spelling out n)
 #   validate [PROFILE]         dry-provision one container (no GitHub token needed) to
 #                              prove mounts/limits/image on this box, then remove it
 #   prune-cache [PROFILE]      clear this profile's cache root
@@ -44,7 +46,17 @@ validate_profile_name() {
 SUBCMD="${1:-status}"
 case "$SUBCMD" in
   scale) PROFILE="${3:-default}" ;;
-  logs)  PROFILE="${4:-default}" ;;
+  logs)
+    # "logs <i> [n] [PROFILE]" — n is optional, so its position is ambiguous
+    # with PROFILE when n is omitted (e.g. "logs 1 myprofile"). Disambiguate by
+    # content: a numeric $3 is the tail count (PROFILE is $4, if given);
+    # anything else in $3 is PROFILE (n falls back to its default in cmd_logs).
+    if [ -n "${3:-}" ] && ! [ "${3}" -eq "${3}" ] 2>/dev/null; then
+      LOG_N=""; PROFILE="${3:-default}"
+    else
+      LOG_N="${3:-}"; PROFILE="${4:-default}"
+    fi
+    ;;
   start|stop|restart|status|status-json|validate|build-image|prune-cache|boot-autostart|\
   autoscale-daemon|autoscale-tick|autoscale-start|autoscale-stop|autoscale-status|\
   imageupdate-daemon|imageupdate-tick|imageupdate-start|imageupdate-stop|imageupdate-status)
@@ -217,11 +229,14 @@ host() { hostname -s; }
 
 # Scoped to THIS profile's containers only: NAME_PREFIX already encodes the
 # profile (ci-runner-<profile>-N, or ci-runner-N for "default"), and the exact
-# ^...-[0-9]+$ anchor stops e.g. "default"'s ci-runner-N from matching
-# "ci-runner-thisprop-N" (a longer prefix) and vice versa.
+# ^...-(N|validate)$ anchor stops e.g. "default"'s ci-runner-N from matching
+# "ci-runner-thisprop-N" (a longer prefix) and vice versa. "validate" is
+# included so a leaked validate probe (cmd_validate killed mid-run, before its
+# own cleanup) still gets swept up by cmd_stop/reap_dead_runners, same as
+# before this filter existed.
 managed_names() {
   docker ps -a --filter "label=${MANAGED_LABEL}" --format '{{.Names}}' \
-    | grep -E "^${NAME_PREFIX}-[0-9]+\$" | sort -V
+    | grep -E "^${NAME_PREFIX}-([0-9]+|validate)\$" | sort -V
 }
 
 current_count() { managed_names | grep -c . ; }
@@ -732,13 +747,18 @@ write_dind_config() {
 # Remove every rule we previously added (matched by our comment tag), highest line
 # number first so deletes don't renumber out from under us. Covers BOTH chains we
 # touch: DOCKER-USER (forwarded traffic) and INPUT (traffic to the host's own IPs).
-# Idempotent.
+# Idempotent. Matches on "$FW_TAG:" (tag + the literal delimiter each comment uses,
+# e.g. "$FW_TAG:mirror"), not bare $FW_TAG — the default profile's tag
+# ("ci-runner-farm") is otherwise a string-prefix of every other profile's tag
+# ("ci-runner-farm-<profile>"), so an unanchored substring match would have the
+# default profile's firewall_clear (run on every Start/Stop) delete every other
+# profile's strict-mode egress rules too.
 firewall_clear() {
   command -v iptables >/dev/null 2>&1 || return 0
   local chain n
   for chain in DOCKER-USER INPUT; do
     for n in $(iptables -w -L "$chain" --line-numbers -n 2>/dev/null \
-               | awk -v t="$FW_TAG" 'index($0,t){print $1}' | sort -rn); do
+               | awk -v t="${FW_TAG}:" 'index($0,t){print $1}' | sort -rn); do
       iptables -w -D "$chain" "$n" 2>/dev/null || true
     done
   done
@@ -1180,7 +1200,7 @@ case "${1:-status}" in
   scale)        cmd_scale "${2:?usage: scale <N>}" ;;
   status)       cmd_status ;;
   status-json)  cmd_status_json ;;
-  logs)         cmd_logs "${2:-1}" "${3:-100}" ;;
+  logs)         cmd_logs "${2:-1}" "${LOG_N:-100}" ;;
   validate)         cmd_validate ;;
   build-image)      cmd_build_image ;;
   prune-cache)      cmd_prune_cache ;;

@@ -78,7 +78,18 @@ switch ($action) {
       echo json_encode(['ok'=>false,'error'=>'fleet is running for this profile — Stop it before deleting']);
       break;
     }
-    foreach (["$CFGDIR/$name.cfg", "$CFGDIR/$name.token", "$CFGDIR/$name.Dockerfile", "$CFGDIR/build-$name.log"] as $f) {
+    // Stop this profile's daemons first — otherwise a still-running
+    // autoscale/image-update loop (e.g. scaled to 0 but the daemon never
+    // exited) is orphaned: it keeps running under the now-deleted profile's
+    // name with no cfg left to read.
+    run(escapeshellarg($SCRIPT) . ' autoscale-stop ' . escapeshellarg($name));
+    run(escapeshellarg($SCRIPT) . ' imageupdate-stop ' . escapeshellarg($name));
+    foreach ([
+      "$CFGDIR/$name.cfg", "$CFGDIR/$name.token", "$CFGDIR/$name.Dockerfile", "$CFGDIR/build-$name.log",
+      "$CFGDIR/autoscale-$name.pid", "$CFGDIR/autoscale-$name.log", "$CFGDIR/autoscale-$name.state",
+      "$CFGDIR/imageupdate-$name.pid", "$CFGDIR/imageupdate-$name.log",
+      "$CFGDIR/security-warn-$name.cache",
+    ] as $f) {
       @unlink($f);
     }
     echo json_encode(['ok' => true, 'action' => 'delete-profile', 'profile' => $name]);
@@ -151,7 +162,10 @@ switch ($action) {
 
   case 'build-log':
     $txt = is_file($buildLog) ? shell_exec('tail -n 100 ' . escapeshellarg($buildLog)) : '';
-    $running = trim(shell_exec("pgrep -f " . escapeshellarg("runner-farm.sh build-image $profile") . " >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
+    // Anchored with a trailing '$' (pgrep -f matches a regex against the full
+    // command line): an unanchored pattern would match profile "foo"'s build
+    // while checking a profile whose name is a prefix of it, e.g. "f".
+    $running = trim(shell_exec("pgrep -f " . escapeshellarg("runner-farm.sh build-image $profile$") . " >/dev/null 2>&1 && echo 1 || echo 0")) === '1';
     echo json_encode(['ok' => true, 'running' => $running, 'log' => $txt]);
     break;
 
