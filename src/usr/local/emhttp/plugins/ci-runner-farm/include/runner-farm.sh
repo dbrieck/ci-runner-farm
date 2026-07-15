@@ -210,6 +210,11 @@ load_token() {
   fi
 }
 
+# Stash the placeholder defaults before load_cfg overwrites them: status-json's
+# target_ok compares the loaded values against these to tell "user configured a
+# real target" from "still the shipped example" (drift-proof — one source).
+_DEF_GH_OWNER="$GH_OWNER"
+_DEF_GH_REPOS="$GH_REPOS"
 load_cfg
 load_token
 [ -z "$REGISTRY_TOKEN" ] && [ -f "$REGISTRY_TOKEN_FILE" ] && REGISTRY_TOKEN="$(cat "$REGISTRY_TOKEN_FILE" 2>/dev/null)"
@@ -1075,7 +1080,26 @@ cmd_status_json() {
   local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cache_root_problem | json_escape)"
   local sec; sec="$(public_repo_problem | json_escape)"
-  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"runners\":${out}}"
+  # Setup-checklist fields for the web UI's Overview tab:
+  #   image_ready — the runner image the fleet would use exists (builtin: the
+  #                 locally-built tag is present; remote: an IMAGE ref is set —
+  #                 it pulls on start, so configured counts as ready).
+  #   target_ok   — the GitHub target was actually configured, i.e. differs
+  #                 from the shipped placeholder defaults stashed before load_cfg.
+  local eimg; eimg="$(effective_image)"
+  local img_ready=false
+  if [ "$IMAGE_SOURCE" = "remote" ]; then
+    [ -n "$IMAGE" ] && img_ready=true
+  else
+    docker image inspect "$eimg" >/dev/null 2>&1 && img_ready=true
+  fi
+  local target_ok=false
+  if [ "$GH_SCOPE" = "org" ]; then
+    [ -n "$GH_OWNER" ] && [ "$GH_OWNER" != "$_DEF_GH_OWNER" ] && target_ok=true
+  else
+    [ -n "$GH_REPOS" ] && [ "$GH_REPOS" != "$_DEF_GH_REPOS" ] && target_ok=true
+  fi
+  echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"image\":\"$(echo "$eimg" | json_escape)\",\"image_ready\":${img_ready},\"target_ok\":${target_ok},\"runners\":${out}}"
 }
 
 cmd_logs() { docker logs --tail "${2:-100}" -f "${NAME_PREFIX}-${1:-1}"; }

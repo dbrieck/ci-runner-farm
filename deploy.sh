@@ -13,7 +13,8 @@ cd "$(dirname "$0")"
 
 echo "[deploy] syncing $SRC -> $HOST:$DEST"
 ssh "$HOST" "mkdir -p '$DEST/include'"
-scp -q "$SRC/RunnerFarm.page" "$SRC/default.cfg" "$SRC/default.Dockerfile" "$SRC/README.md" "$HOST:$DEST/"
+scp -q "$SRC"/RunnerFarm*.page "$SRC/runner-farm.css" "$SRC/runner-farm.js" \
+       "$SRC/default.cfg" "$SRC/default.Dockerfile" "$SRC/README.md" "$HOST:$DEST/"
 scp -q "$SRC"/include/* "$HOST:$DEST/include/"
 
 echo "[deploy] enforcing root:root + perms on $HOST"

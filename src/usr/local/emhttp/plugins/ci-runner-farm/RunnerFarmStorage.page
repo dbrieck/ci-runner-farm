@@ -1,0 +1,82 @@
+Menu="RunnerFarm:5"
+Title="Storage & Docker"
+Tag="hdd-o"
+---
+<?php require_once "/usr/local/emhttp/plugins/ci-runner-farm/include/page-common.php"; crf_emit_assets(); crf_profile_switcher(); ?>
+<link type="text/css" rel="stylesheet" href="<?autov('/webGui/styles/jquery.filetree.css')?>">
+<script src="<?autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
+
+<form markdown="1" name="ci_runner_farm_storage" method="POST" action="/update.php" target="progressFrame">
+<input type="hidden" name="#file" value="<?=htmlspecialchars($cfgFileRel, ENT_QUOTES)?>">
+
+_(Cache root)_:
+: <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
+
+:crf_cache_plug:
+> Pool path for warm shared caches (pnpm/npm/yarn), each Docker-in-Docker runner's Docker data root, and (if tmpfs is off) the bind workspaces. Click the field to browse and pick a folder. Non-default profiles get their own namespace underneath this path automatically.
+>
+> **Use a real pool dataset (e.g. `/mnt/<pool>/github-runner`), not a `/mnt/user/...` user share.** User shares are FUSE (fuse.shfs), and with Docker-in-Docker on, overlay2 cannot run on FUSE &mdash; so `buildx` and `services:` jobs fail with `mount overlay ... invalid argument`. The Overview tab warns you if this path is unsafe.
+:end
+
+_(Workspace tmpfs size)_:
+: <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
+
+:crf_tmpfs_plug:
+> Size of the RAM-backed per-job workspace, e.g. 8g &mdash; a clean, fast workspace each job while caches stay warm. Blank binds the workspace to the pool instead of RAM.
+:end
+
+_(Cache mounts)_:
+: <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright')?>">
+
+:crf_cache_mounts_plug:
+> Space-separated `host-subdir:container-path` warm caches mounted into every runner (created under the cache root). Defaults cover pnpm/npm/yarn/Playwright &mdash; edit for your stack.
+:end
+
+### Docker
+
+_(Docker-in-docker mode)_:
+: <select name="DIND">
+  <option value="true" <?=crf_sel($cfg,'DIND','true','true')?>>true (own daemon per runner, privileged)</option>
+  <option value="false" <?=crf_sel($cfg,'DIND','false','true')?>>false (use host docker.sock)</option>
+  </select>
+
+:crf_dind_plug:
+> Docker-in-docker: each runner runs its own Docker daemon (requires --privileged).
+>
+> Fixes GitHub Actions services: networking (localhost:port becomes reachable from job steps) and "port already allocated" collisions between parallel jobs. Recommended when workflows use services: or service containers.
+>
+> Each runner's `/var/lib/docker` is stored under **Cache root**, so when this is on, Cache root **must** be a real pool dataset (not a `/mnt/user` FUSE share) or `docker build`/`buildx`/`services:` will fail with overlay mount errors.
+:end
+
+_(Share host docker.sock)_:
+: <select name="SHARE_DOCKER_SOCK">
+  <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','false')?>>false</option>
+  <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','false')?>>true</option>
+  </select>
+
+:crf_sock_plug:
+> Mount the host Docker socket so jobs can start service containers (e.g. postgres for integration tests). PRIVATE repos only &mdash; never expose this to public/fork-PR code (root-equivalent host access).
+:end
+
+_(Network isolation)_:
+: <select name="NETWORK_ISOLATION">
+  <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
+  <option value="isolate" <?=crf_sel($cfg,'NETWORK_ISOLATION','isolate','off')?>>isolate (dedicated bridge)</option>
+  <option value="strict" <?=crf_sel($cfg,'NETWORK_ISOLATION','strict','off')?>>strict (dedicated bridge + block host/LAN)</option>
+  </select>
+
+:crf_net_plug:
+> Confines the runners at the network layer. Applies on the next **Start**.
+>
+> **off** &mdash; runners share the default Docker bridge (legacy behavior).
+>
+> **isolate** &mdash; runners run on a dedicated bridge (`ci-runner-net`), so they can't reach your **other Unraid containers**. The shared image cache joins the same network. Low-risk; recommended.
+>
+> **strict** &mdash; everything `isolate` does, **plus** firewall rules (Docker's `DOCKER-USER` chain) that stop runners from reaching the **Unraid host and your LAN**, while still allowing the internet and the shared cache. Best when runners might touch less-trusted code. Requires `iptables` on the host; if it can't be applied, Start logs a warning and continues without the egress rules.
+:end
+
+&nbsp;
+: <input type="submit" name="Apply" value="_(Apply)_" style="width:auto">
+  <input type="button" value="_(Reset to defaults)_" onclick="crfResetDefaults(this)" style="width:auto">
+
+</form>

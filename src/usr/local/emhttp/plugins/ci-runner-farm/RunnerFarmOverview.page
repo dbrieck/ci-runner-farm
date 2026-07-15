@@ -1,0 +1,49 @@
+Menu="RunnerFarm:1"
+Title="Overview"
+Tag="dashboard"
+Markdown="false"
+---
+<?php require_once "/usr/local/emhttp/plugins/ci-runner-farm/include/page-common.php"; crf_emit_assets(); crf_profile_switcher(); ?>
+
+<div id="crf-sec" class="crf-banner-sec"></div>
+<div id="crf-warn" class="crf-banner-warn"></div>
+
+<?php
+/* Setup checklist: server-side initial render covers the gap before the first
+   5s status poll (step 1 from $has_token; the rest render as pending until the
+   poll fills in target_ok/warning/image_ready/count). crfRenderChecklist()
+   re-renders the whole panel from live state on every poll. */
+?>
+<div id="crf-setup" class="crf-setup">
+  <div class="crf-setup-title">Setup checklist</div>
+  <div class="crf-check <?= ($has_token || $tokenInherited) ? 'crf-check-pass' : 'crf-check-fail' ?>">
+    <span class="crf-check-icon"><?= ($has_token || $tokenInherited) ? '&#10004;' : '&#9654;' ?></span>
+    <span class="crf-check-label">1. Save a GitHub token (PAT)</span>
+    <?php if (!$has_token && !$tokenInherited): ?>
+    <span class="crf-check-hint">Create the pre-scoped PAT and save it on the GitHub tab. <a href="#" onclick="crfGoTab(2);return false">Go to tab &rarr;</a></span>
+    <?php endif; ?>
+  </div>
+  <div class="crf-check crf-check-pending"><span class="crf-check-icon">&#8226;</span><span class="crf-check-label">2. Point at your repository</span></div>
+  <div class="crf-check crf-check-pending"><span class="crf-check-icon">&#8226;</span><span class="crf-check-label">3. Pick a valid cache root</span></div>
+  <div class="crf-check crf-check-pending"><span class="crf-check-icon">&#8226;</span><span class="crf-check-label">4. Runner image ready</span></div>
+  <div class="crf-check crf-check-pending"><span class="crf-check-icon">&#8226;</span><span class="crf-check-label">5. Start the fleet</span></div>
+</div>
+
+<div id="crf-cards" class="crf-cards"></div>
+
+<p><strong>Fleet control</strong> &mdash; profile: <code><?=htmlspecialchars($profile, ENT_QUOTES)?></code></p>
+<p>
+  <input type="button" value="Start" onclick="crfAction('start')">
+  <input type="button" value="Stop" onclick="crfAction('stop')">
+  <input type="button" value="Restart" onclick="crfAction('restart')">
+  <input type="button" value="Validate (no token)" onclick="crfAction('validate')">
+  &nbsp; Scale to <input type="number" id="crf-n" min="0" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>" style="width:4em">
+  <input type="button" value="Scale" onclick="crfScale()">
+</p>
+
+<table class="crf-status" id="crf-table">
+  <thead><tr><th>Runner</th><th>State</th><th>Phase</th><th>CPU</th><th>Mem</th></tr></thead>
+  <tbody><tr><td colspan="5">loading...</td></tr></tbody>
+</table>
+<div id="crf-meta" class="crf-meta"></div>
+<div id="crf-action-log" class="crf-log"><span class="crf-log-placeholder">Output from fleet actions (Start/Stop/Scale/Validate) appears here. Image-build output has its own panel on the Runner Image tab.</span></div>

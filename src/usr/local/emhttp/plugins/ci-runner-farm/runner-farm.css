@@ -1,0 +1,64 @@
+/* CI Runner Farm - shared styles for the RunnerFarm* tab pages.
+   Theme strategy: Unraid ships light and dark themes without a stable public
+   CSS-variable contract, so surfaces/borders use rgba grays + currentColor
+   (readable on both), while the small accent set matches the plugin's
+   existing colors: green #3a7, amber #c84, red #c44, gray #888.
+   Log panels stay intentionally dark (#1e1e1e) on both themes. */
+
+/* ---- profile switcher (one copy per tab section; classes only) ---- */
+.crf-profiles{margin:8px 0 14px 0}
+.crf-profile{display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:4px;
+  text-decoration:none;background:rgba(128,128,128,.15);color:inherit}
+.crf-profile-active{background:#3a7;color:#fff;font-weight:bold}
+.crf-profiles-hint{font-size:12px;color:#888;margin-top:4px}
+
+/* ---- banners ---- */
+.crf-banner-sec{display:none;margin:8px 0;padding:10px 12px;border-radius:4px;
+  background:#fff4e5;color:#7a4a00;border:1px solid #ffce85;font-size:13px;line-height:1.4;font-weight:bold}
+.crf-banner-warn{display:none;margin:8px 0;padding:10px 12px;border-radius:4px;
+  background:#fdecea;color:#7a1c14;border:1px solid #f5c2bd;font-size:13px;line-height:1.4}
+
+/* ---- setup checklist (Overview) ---- */
+.crf-setup{margin:10px 0 16px 0;padding:12px 14px;border-radius:6px;
+  background:rgba(128,128,128,.08);border:1px solid rgba(128,128,128,.25)}
+.crf-setup-done{padding:8px 14px;font-weight:bold}
+.crf-setup-title{font-weight:bold;font-size:14px;margin-bottom:8px}
+.crf-check{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:13px}
+.crf-check-icon{width:1.2em;text-align:center;flex:none}
+.crf-check-pass{color:#3a7}
+.crf-check-pass .crf-check-label{color:inherit;opacity:.7;text-decoration:line-through}
+.crf-check-fail{font-weight:bold}
+.crf-check-fail .crf-check-icon{color:#c84}
+.crf-check-pending{opacity:.45}
+.crf-check-hint{font-weight:normal;font-size:12px;color:#888;margin-left:6px}
+.crf-check-hint a{color:#3a7;font-weight:bold;text-decoration:none}
+
+/* ---- status cards (Overview) ---- */
+.crf-cards{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+.crf-card{flex:1 1 150px;min-width:150px;padding:10px 12px;border-radius:6px;
+  background:rgba(128,128,128,.08);border:1px solid rgba(128,128,128,.25)}
+.crf-card-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#888}
+.crf-card-value{font-size:15px;font-weight:bold;margin-top:2px}
+.crf-ok{color:#3a7}
+.crf-bad{color:#c44}
+.crf-dim{opacity:.6}
+
+/* ---- runner status table (Overview) ---- */
+.crf-status{text-align:left;width:100%;border-collapse:collapse}
+.crf-status td,.crf-status th{padding:5px 10px}
+.crf-status tbody tr{border-top:1px solid rgba(128,128,128,.15)}
+.crf-status tbody tr:nth-child(odd){background:rgba(128,128,128,.05)}
+.crf-pill{padding:1px 8px;border-radius:10px;font-size:11px;color:#fff}
+.crf-idle{background:#3a7}.crf-busy{background:#c84}.crf-error{background:#c44}
+.crf-starting{background:#789}.crf-exited{background:#888}
+
+/* ---- log panels (action log on Overview, build log on Runner Image) ---- */
+.crf-log{white-space:pre-wrap;font-family:monospace;font-size:12px;min-height:120px;
+  max-height:260px;overflow:auto;background:#1e1e1e;color:#ddd;padding:8px;
+  border-radius:4px;margin-top:8px}
+.crf-log .crf-log-placeholder{color:#888}
+
+/* ---- misc ---- */
+.crf-meta{font-size:12px;color:#888;margin-top:4px}
+.crf-panel{margin:12px 0;padding:12px 14px;border-radius:6px;
+  background:rgba(128,128,128,.06);border:1px solid rgba(128,128,128,.2)}
