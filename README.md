@@ -37,7 +37,7 @@ dependency caches that stay hot between runs, at zero cost per minute.
 | **Docker-in-Docker per runner** | Jobs that use `services:` or `docker compose` just work, with an optional shared pull-through registry mirror so images are pulled once for the whole fleet. |
 | **Bring your own image** | Use the in-plugin image builder, or point at any image you publish to a registry (public or private). |
 | **Multiple fleets (profiles)** | Run independent fleets side by side — different repos, labels, counts, caches, and Dockerfiles. See [PROFILES.md](PROFILES.md). |
-| **Tabbed webGUI with guided setup** | An Overview tab walks you through setup step by step (token → repo → cache → image → start) with live pass/fail checks, then gives you fleet controls and per-runner status. Settings are organized into GitHub / Runners / Runner Image / Storage & Docker tabs — no shell required. |
+| **Fleet console with guided setup** | A single **Console** under Utilities: live runner table, Start/Stop/Scale, and a first-run **wizard**. All cfg lives in one **Fleet settings** drawer (one Apply) — no shell required. |
 
 ---
 
@@ -143,66 +143,43 @@ anything you want to keep.
 ## Setup, step by step
 
 You'll need a GitHub Personal Access Token and a fast pool/share for caches.
-Everything happens under **Settings → Utilities → CI Runner Farm**, which is
-organized into tabs: **Overview · GitHub · Runners · Runner Image · Storage &
-Docker**. The **Overview** tab shows a live **setup checklist** that tracks
-these exact steps — it highlights the one thing to do next and links to the
-right tab, so you can just follow it. A **Fleet profile** switcher at the top
-of every tab selects which fleet you're configuring (the `default` profile is
-all you need for a single fleet).
+Open **Settings → Utilities → CI Runner Farm**. On a fresh install a **setup
+wizard** walks you through token → registration target → cache root → image →
+**Save & Launch**. Day-to-day you use the **Console** (fleet table + controls);
+change anything else via **Fleet settings** (one form, one Apply). A **Fleet
+profile** switcher selects which fleet you're operating (`default` is enough
+for a single fleet).
 
-### 1. Save your token (GitHub tab)
+### 1. Save your token
 
-Create a GitHub **Personal Access Token** with the pre-scoped link on the
-GitHub tab (`repo` scope; add `admin:org` for org runners) and save it. It's
+Create a GitHub **Personal Access Token** (`repo` scope; add `admin:org` for
+org runners) via the wizard or Fleet settings and click **Save token**. It's
 stored at `/boot/config/plugins/ci-runner-farm/token` with `chmod 600` and is
 **never** written into your plugin config.
 
-### 2. Point it at GitHub (GitHub tab)
+### 2. Point it at GitHub
 
-Choose your **scope** (`repo` or `org`) and set the **owner** / target repos,
-plus an optional **runner group**.
+Choose **These repositories** or **Whole organization**, then set owner /
+repos. Optional **runner group** is under Advanced in Fleet settings.
 
-### 3. Size the fleet (Runners tab)
+### 3. Size the fleet
 
-Set how many **concurrent runners** to run, the **runner labels** workflows
-target with `runs-on:`, and optional **CPU / memory caps per runner** so CI
-can't starve the rest of the box. Optional **queue-aware autoscaling** lives
-here too: min/max, a warm idle buffer, step, check interval, and scale-down
-grace — the daemon adds runners when jobs are queued and trims idle ones.
+In Fleet settings set **concurrent runners**, **labels** (`runs-on:`), and
+optional CPU/memory caps. Ephemeral/root and **autoscaling** are under
+Advanced.
 
-### 4. Pick a cache root and Docker mode (Storage & Docker tab)
+### 4. Image + cache root
 
-Point the **cache root** at a real pool dataset (the field has a folder
-picker; the checklist warns if the path is unsafe), size the workspace tmpfs,
-and configure the **warm caches** (host-subdir → container-path mounts;
-defaults cover pnpm/npm/yarn/Playwright). **Docker-in-Docker mode** and
-**network isolation** are on the same tab.
+Point **cache root** at a real pool dataset (not `/mnt/user/...`). Choose
+**Built-in** (build from Fleet settings) or **Remote**. Registry auth, DinD,
+and network isolation live under Advanced.
 
-### 5. Get a runner image (Runner Image tab)
+### 5. Launch
 
-The **Image source** selector decides where each runner's image comes from:
-
-- **Built-in** (default) — build the image right on the tab with the **Runner
-  image builder**. The plugin ships a generic starter
-  [`default.Dockerfile`](src/usr/local/emhttp/plugins/ci-runner-farm/default.Dockerfile)
-  (stock runner base + a Docker-in-Docker readiness wrapper); customize it —
-  add language runtimes, browsers, build tools — then **Build**. Build output
-  streams to the panel below the editor. No registry needed.
-- **Remote** — pull a named image, e.g. `ghcr.io/org/ci-runner-image:latest`.
-  For a private image, set the registry server and username and save a registry
-  token; the host runs `docker login` before provisioning. For `ghcr.io`,
-  leaving the registry token blank reuses your GitHub token (it just needs
-  `read:packages`).
-
-### 6. Start it (Overview tab)
-
-Click **Validate** (no token needed) to confirm the host can provision, then
-**Start**. The Overview tab shows status cards, live per-runner status (state,
-phase, CPU, memory), and the fleet-action log; the checklist collapses to
-"Setup complete ✓". Once started, the runners show up as ordinary Docker
-containers (`ci-runner-1…N`), plus the optional `ci-runner-mirror` registry
-mirror. Your runners register with GitHub and start picking up jobs.
+In the wizard choose **Save & Launch**, or on the Console click **Start**
+(enabled once setup is ready). **Test host setup** always works without a
+token. The Console shows cards, per-runner status, and the action log. Runners
+appear as Docker containers (`ci-runner-1…N`) plus optional `ci-runner-mirror`.
 
 ---
 
@@ -319,16 +296,12 @@ release-please-config.json         release-please configuration
 VERSION                            mirror of the internal SemVer version
 profiles/                          example fleet profiles (cfg + Dockerfile), see PROFILES.md
 src/usr/local/emhttp/plugins/ci-runner-farm/
-  RunnerFarm.page                  tabbed page container (xmenu parent)
-  RunnerFarmOverview.page          tab: setup checklist, status, fleet control
-  RunnerFarmGitHub.page            tab: GitHub scope/repos + PAT token
-  RunnerFarmRunners.page           tab: sizing + autoscaling
-  RunnerFarmImage.page             tab: image source/registry + Dockerfile builder
-  RunnerFarmStorage.page           tab: caches + Docker/network
-  runner-farm.js / runner-farm.css shared client assets (emitted once per request)
+  RunnerFarm.page                  empty xmenu parent (Settings tile: CI Runner Farm)
+  RunnerFarmStatus.page            Console + settings drawer + setup wizard
+  runner-farm.js / runner-farm.css shared client assets (inlined once per request)
   default.cfg                      seed config
   default.Dockerfile               generic starter runner image
-  include/page-common.php          shared PHP for the tab pages
+  include/page-common.php          shared PHP for the console page
   include/runner-farm.sh           provisioning/control script
   include/exec.php                 CSRF-guarded web endpoint
 .github/workflows/
@@ -336,6 +309,20 @@ src/usr/local/emhttp/plugins/ci-runner-farm/
   release-please.yml               release automation + asset upload
   release.yml                      tagged-release validation
 ```
+
+---
+
+## Test plan (PR / release)
+
+- [ ] Fresh install: wizard auto-opens; Skip to console works
+- [ ] Wizard: Save token, set target/cache/image, Save & Launch
+- [ ] Fleet settings drawer: one Apply persists all cfg keys
+- [ ] Built-in Build + remote image fields when Remote
+- [ ] Unsafe `/mnt/user/...` cache root shows console warning
+- [ ] Start disabled until ready; Test host setup always available
+- [ ] Stop/Restart when fleet count > 0
+- [ ] Single-fleet user never needs Advanced or Profiles to Launch
+- [ ] `php scripts/render-pages.php` passes
 
 ---
 

@@ -108,8 +108,8 @@ fi
 
 # ---- defaults (overridden by <profile>.cfg) --------------------------------
 GH_SCOPE="repo"                       # repo | org
-GH_OWNER="unraid"
-GH_REPOS="unraid/repo-a unraid/repo-b"
+GH_OWNER=""                           # org name when GH_SCOPE=org (empty until configured)
+GH_REPOS=""                           # space-separated owner/repo list when GH_SCOPE=repo
 RUNNER_GROUP=""
 RUNNER_COUNT=4
 RUNNER_LABELS="self-hosted,unraid,build"
@@ -829,7 +829,6 @@ build_args() {
     --label "${PROFILE_LABEL}=${PROFILE}"
     -e RUNNER_NAME="$(host)-${name}"
     -e LABELS="$RUNNER_LABELS"
-    -e EPHEMERAL="$EPHEMERAL"
     -e DISABLE_AUTO_UPDATE="true"
     -e DISABLE_AUTOMATIC_DEREGISTRATION="true"   # we deregister host-side (deregister_runner_api)
     -e RUN_AS_ROOT="$RUN_AS_ROOT"
@@ -837,6 +836,9 @@ build_args() {
     -e RUNNER_WORKDIR="/_work"
     -e npm_config_cache="/home/runner/.npm"
   )
+  # myoung34/github-runner treats ANY presence of EPHEMERAL as enabled — even
+  # the string "false". Only pass the env var when ephemeral is actually on.
+  [ "$EPHEMERAL" = "true" ] && ARGS+=( -e EPHEMERAL=true )
   # warm caches mounted into the runner, configurable via CACHE_MOUNTS
   local m
   for m in $CACHE_MOUNTS; do
@@ -1080,12 +1082,13 @@ cmd_status_json() {
   local iu="off"; [ "$IMAGE_AUTOUPDATE" = "true" ] && iu="$(imageupdate_status) (every $((IMAGE_AUTOUPDATE_INTERVAL/60))m)"
   local warn; warn="$(cache_root_problem | json_escape)"
   local sec; sec="$(public_repo_problem | json_escape)"
-  # Setup-checklist fields for the web UI's Overview tab:
+  # Setup-checklist fields for the web UI's Status tab:
   #   image_ready — the runner image the fleet would use exists (builtin: the
   #                 locally-built tag is present; remote: an IMAGE ref is set —
   #                 it pulls on start, so configured counts as ready).
-  #   target_ok   — the GitHub target was actually configured, i.e. differs
-  #                 from the shipped placeholder defaults stashed before load_cfg.
+  #   target_ok   — GitHub target is configured (non-empty owner for org scope,
+  #                 or non-empty repos for repo scope). Empty shipped defaults
+  #                 mean any user-entered value counts as configured.
   local eimg; eimg="$(effective_image)"
   local img_ready=false
   if [ "$IMAGE_SOURCE" = "remote" ]; then
@@ -1095,9 +1098,9 @@ cmd_status_json() {
   fi
   local target_ok=false
   if [ "$GH_SCOPE" = "org" ]; then
-    [ -n "$GH_OWNER" ] && [ "$GH_OWNER" != "$_DEF_GH_OWNER" ] && target_ok=true
+    [ -n "$GH_OWNER" ] && target_ok=true
   else
-    [ -n "$GH_REPOS" ] && [ "$GH_REPOS" != "$_DEF_GH_REPOS" ] && target_ok=true
+    [ -n "$GH_REPOS" ] && target_ok=true
   fi
   echo "{\"count\":$(echo "$names" | grep -c . ),\"configured\":${RUNNER_COUNT},\"token\":$([ -n "$ACCESS_TOKEN" ] && echo true || echo false),\"autoscale\":\"${as} [${AUTOSCALE_MIN}-${AUTOSCALE_MAX}, buffer ${AUTOSCALE_MIN_IDLE}]\",\"image_autoupdate\":\"$(echo "$iu" | json_escape)\",\"warning\":\"${warn}\",\"security\":\"${sec}\",\"image\":\"$(echo "$eimg" | json_escape)\",\"image_ready\":${img_ready},\"target_ok\":${target_ok},\"runners\":${out}}"
 }

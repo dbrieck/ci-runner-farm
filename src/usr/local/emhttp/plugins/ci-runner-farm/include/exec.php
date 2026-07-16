@@ -169,6 +169,51 @@ switch ($action) {
     echo json_encode(['ok' => true, 'running' => $running, 'log' => $txt]);
     break;
 
+  case 'export-config':
+    // Shareable fleet snapshot for support / hand-editing. Never includes PATs
+    // or registry passwords — those stay in chmod-600 token files.
+    $allow = [
+      'GH_SCOPE','GH_OWNER','GH_REPOS','RUNNER_GROUP','RUNNER_COUNT','RUNNER_LABELS',
+      'RUNNER_CPUS','RUNNER_MEMORY','EPHEMERAL','RUN_AS_ROOT','IMAGE_SOURCE','IMAGE',
+      'REGISTRY_SERVER','REGISTRY_USERNAME','CACHE_ROOT','WORK_TMPFS_SIZE','CACHE_MOUNTS',
+      'DIND','SHARE_DOCKER_SOCK','NETWORK_ISOLATION','IMAGE_AUTOUPDATE','IMAGE_AUTOUPDATE_INTERVAL',
+      'IMAGE_DRAIN_TIMEOUT','AUTOSCALE','AUTOSCALE_MIN','AUTOSCALE_MAX','AUTOSCALE_MIN_IDLE',
+      'AUTOSCALE_STEP','AUTOSCALE_INTERVAL','AUTOSCALE_IDLE_GRACE',
+    ];
+    $settings = [];
+    if (is_file($cfgFile)) {
+      foreach (file($cfgFile, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || strpos($line, '=') === false) continue;
+        [$k, $v] = explode('=', $line, 2);
+        $k = trim($k);
+        if (!in_array($k, $allow, true)) continue;
+        $v = trim($v);
+        if (strlen($v) >= 2 && (($v[0] === '"' && substr($v, -1) === '"') || ($v[0] === "'" && substr($v, -1) === "'"))) {
+          $v = substr($v, 1, -1);
+        }
+        $settings[$k] = $v;
+      }
+    }
+    $customDf = $isDefault ? "$CFGDIR/Dockerfile" : "$CFGDIR/$profile.Dockerfile";
+    $df = is_file($customDf) ? file_get_contents($customDf) : '';
+    echo json_encode([
+      'ok' => true,
+      'bundle' => [
+        'format'     => 'ci-runner-farm-export',
+        'version'    => 1,
+        'profile'    => $profile,
+        'exportedAt' => gmdate('c'),
+        'settings'   => $settings,
+        'dockerfile' => $df,
+        'secrets'    => [
+          'hasToken'         => is_file($tokenFile),
+          'hasRegistryToken' => is_file("$CFGDIR/registry-token"),
+        ],
+      ],
+    ]);
+    break;
+
   default:
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'unknown action']);
