@@ -64,12 +64,16 @@ $cfgFileRel = $isDefaultProfile ? "$plugin/$plugin.cfg" : "$plugin/$profile.cfg"
 $tokenPath  = $isDefaultProfile ? "$cfgdir/token" : "$cfgdir/$profile.token";
 $has_token  = file_exists($tokenPath);
 $tokenInherited = !$has_token && !$isDefaultProfile && file_exists("$cfgdir/token");
-$csrf     = $var['csrf_token'] ?? '';
+/* Prefer the live session token from $var (Dynamix page scope). Fall back to
+   var.ini the same way exec.php does, so CRF.csrf is never empty just because
+   $var was missing from an unusual render path. */
+$ini      = @parse_ini_file('/var/local/emhttp/var.ini') ?: [];
+$csrf     = $var['csrf_token'] ?? $ini['csrf_token'] ?? '';
 /* Single source of truth for every form field's default. Drives both the
    rendered fallback (via crf_g/crf_sel) and the client-side per-tab "Reset to
    defaults" buttons (emitted as CRF.defaults), so the two can never drift. */
 $defaults = [
-  'GH_SCOPE'=>'repo', 'GH_OWNER'=>'unraid', 'GH_REPOS'=>'unraid/repo-a unraid/repo-b',
+  'GH_SCOPE'=>'repo', 'GH_OWNER'=>'', 'GH_REPOS'=>'',
   'RUNNER_GROUP'=>'', 'RUNNER_COUNT'=>'4', 'RUNNER_LABELS'=>'self-hosted,unraid,build',
   'RUNNER_CPUS'=>'', 'RUNNER_MEMORY'=>'16g', 'EPHEMERAL'=>'false', 'RUN_AS_ROOT'=>'false',
   'IMAGE_SOURCE'=>'builtin', 'IMAGE'=>'', 'REGISTRY_SERVER'=>'', 'REGISTRY_USERNAME'=>'',
@@ -91,8 +95,10 @@ $dockerfile = is_file($dfFile) ? file_get_contents($dfFile) : '';
 function crf_g($cfg,$k,$d=''){ global $defaults; return htmlspecialchars($cfg[$k] ?? $defaults[$k] ?? $d, ENT_QUOTES); }
 function crf_sel($cfg,$k,$val,$d=''){ global $defaults; return (($cfg[$k] ?? $defaults[$k] ?? $d) === $val) ? 'selected' : ''; }
 
-/* Emit the shared CSS/JS assets and the CRF config blob — exactly ONCE per
-   request even though every tab calls this (order-independent by design). */
+/* Emit shared CSS/JS and the CRF config blob — exactly ONCE per request.
+   CSS is inlined via <style> (Unraid tab panels often strip/mangle <link> in
+   body, which left the href path visible and styles unloaded). Dynamix also
+   auto-loads sheets/RunnerFarmStatus.css into <head> when present. */
 function crf_emit_assets() {
   static $done = false;
   if ($done) return;
@@ -107,26 +113,62 @@ function crf_emit_assets() {
     'tokenInherited'  => $tokenInherited,
     'builtinImageTag' => $builtinImageTag,
   ]);
-  echo '<link type="text/css" rel="stylesheet" href="'.autov("/plugins/$plugin/runner-farm.css").'">'."\n";
+  $cssPath = __DIR__ . '/../runner-farm.css';
+  if (!is_file($cssPath)) $cssPath = "/usr/local/emhttp/plugins/$plugin/runner-farm.css";
+  $css = is_file($cssPath) ? file_get_contents($cssPath) : false;
+  if ($css !== false && $css !== '') {
+    $css = str_replace('</style>', '<\/style>', $css);
+    echo "<style id=\"crf-css\">\n{$css}\n</style>\n";
+  }
   echo '<script>window.CRF = '.$blob.';</script>'."\n";
-  echo '<script src="'.autov("/plugins/$plugin/runner-farm.js").'"></script>'."\n";
+  /* Inline like stock Dynamix pages (Notifications.page): handlers must be
+     page globals for onclick=. External <script src> inside a tab panel is
+     unreliable across Unraid/webGUI versions. Escape </script> so a string
+     in the JS file cannot terminate this block early. */
+  $jsPath = __DIR__ . '/../runner-farm.js';
+  if (!is_file($jsPath)) $jsPath = "/usr/local/emhttp/plugins/$plugin/runner-farm.js";
+  $js = is_file($jsPath) ? file_get_contents($jsPath) : false;
+  if ($js !== false && $js !== '') {
+    $js = str_replace('</script>', '<\/script>', $js);
+    echo "<script>\n{$js}\n</script>\n";
+  } else {
+    echo '<script src="'.autov("/plugins/$plugin/runner-farm.js").'"></script>'."\n";
+  }
 }
 
-/* The profile switcher bar, rendered at the top of EVERY tab so the active
-   fleet is always visible. Classes only — no ids — because this markup exists
-   once per tab section (5 copies in the one shared DOM). */
+/* The profile switcher bar on the console. Classes only — no ids. */
 function crf_profile_switcher() {
   global $profiles, $profile, $isDefaultProfile;
-  echo '<div class="crf-profiles"><strong>Fleet profile:</strong>&nbsp;<span>';
+  $multi = count($profiles) > 1;
+  /* Single-fleet: minimal chrome. Multi-fleet: full switcher. Add profile
+     stays one click away via the details disclosure when only "default". */
+  if (!$multi) {
+    echo '<div class="crf-profiles crf-profiles-solo">';
+    echo '<strong>Fleet:</strong> <code>'.htmlspecialchars($profile, ENT_QUOTES).'</code>';
+    echo ' <details class="crf-profiles-more"><summary>More fleets</summary>';
+    echo '<p class="crf-profiles-hint">Optional: run a second independent fleet (different repos, labels, or image) alongside this one.</p>';
+    echo '<input type="button" value="+ Add profile" onclick="window.crfAddProfile()" style="width:auto">';
+    echo '</details></div>'."\n";
+    return;
+  }
+  echo '<div class="crf-profiles"><strong>Fleet profile:</strong>&nbsp;';
+  $first = true;
   foreach ($profiles as $p) {
-    $cls = ($p === $profile) ? 'crf-profile crf-profile-active' : 'crf-profile';
-    echo '<a class="'.$cls.'" href="?profile='.urlencode($p).'">'.htmlspecialchars($p, ENT_QUOTES).'</a>';
+    if (!$first) echo ' ';
+    $first = false;
+    $active = ($p === $profile);
+    $cls = $active ? 'crf-profile crf-profile-active' : 'crf-profile';
+    /* Inline styles so pills stay readable even if plugin CSS fails to load. */
+    $style = $active
+      ? 'display:inline-block;margin:0 6px 4px 0;padding:3px 10px;border-radius:4px;text-decoration:none;background:#3a7;color:#fff;font-weight:bold'
+      : 'display:inline-block;margin:0 6px 4px 0;padding:3px 10px;border-radius:4px;text-decoration:none;background:rgba(128,128,128,.2);color:inherit';
+    echo '<a class="'.$cls.'" style="'.$style.'" href="?profile='.urlencode($p).'">'.htmlspecialchars($p, ENT_QUOTES).'</a>';
   }
-  echo '</span> <input type="button" value="+ Add profile" onclick="crfAddProfile()" style="width:auto">';
+  echo ' <input type="button" value="+ Add profile" onclick="window.crfAddProfile()" style="width:auto">';
   if (!$isDefaultProfile) {
-    echo ' <input type="button" value="Delete this profile" onclick="crfDeleteProfile()" style="width:auto">';
+    echo ' <input type="button" value="Delete this profile" onclick="window.crfDeleteProfile()" style="width:auto">';
   }
-  echo '<div class="crf-profiles-hint">Each profile is an independent fleet: its own GitHub target, runner count, labels, caches, and Dockerfile. "default" is the original single-fleet setup and can\'t be deleted.</div></div>'."\n";
+  echo '<div class="crf-profiles-hint">Each profile is an independent fleet. "default" can\'t be deleted.</div></div>'."\n";
 }
 
 /* DORMANT fallback for the /update.php merge question (see PROFILES/UI plan):

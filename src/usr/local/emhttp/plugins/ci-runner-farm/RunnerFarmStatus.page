@@ -1,0 +1,332 @@
+Menu="RunnerFarm:1"
+Title="Console"
+Tag="server"
+Markdown="false"
+---
+<?php
+/* Fleet console — in-page views (console / settings / wizard). No fixed overlays.
+   Parent RunnerFarm.page is an empty xmenu shell (Settings tile: CI Runner Farm). */
+require_once "/usr/local/emhttp/plugins/ci-runner-farm/include/page-common.php";
+crf_emit_assets();
+?>
+<link type="text/css" rel="stylesheet" href="<?=autov('/webGui/styles/jquery.filetree.css')?>">
+<script src="<?=autov('/webGui/javascript/jquery.filetree.js')?>" charset="utf-8"></script>
+
+<div id="crf-app" class="crf-app crf-view-console">
+
+  <!-- ===== Console view ===== -->
+  <div id="crf-view-console" class="crf-view">
+    <div class="crf-topbar">
+      <div class="crf-topbar-left">
+        <div class="crf-brand-block">
+          <div class="crf-brand">CI Runner Farm</div>
+          <?php crf_profile_switcher(); ?>
+        </div>
+      </div>
+      <div class="crf-topbar-actions">
+        <input type="button" value="Fleet settings" onclick="window.crfOpenDrawer()" style="width:auto">
+        <span class="crf-action-sep"></span>
+        <input type="button" id="crf-start" value="Start" onclick="window.crfAction('start')" disabled title="Complete setup first">
+        <input type="button" id="crf-stop" value="Stop" onclick="window.crfAction('stop')" disabled>
+        <input type="button" id="crf-restart" value="Restart" onclick="window.crfAction('restart')" disabled>
+        <input type="button" id="crf-validate" value="Test host setup" title="Provisions a throwaway container without a GitHub token" onclick="window.crfAction('validate')" style="width:auto">
+        <span class="crf-scale">Scale to <input type="number" id="crf-n" min="0" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>" style="width:4em">
+        <input type="button" value="Scale" onclick="window.crfScale()" style="width:auto"></span>
+      </div>
+    </div>
+
+    <div id="crf-err" class="crf-banner-err" style="display:none"></div>
+    <div id="crf-sec" class="crf-banner-sec"></div>
+    <div id="crf-warn" class="crf-banner-warn"></div>
+
+    <div id="crf-setup-chip" class="crf-setup-chip" style="display:none">
+      <span id="crf-setup-chip-text">Setup incomplete</span>
+      <a href="#" onclick="window.crfOpenWizard();return false">Continue setup &rarr;</a>
+    </div>
+
+    <div id="crf-cards" class="crf-cards"></div>
+    <p id="crf-start-hint" class="crf-field-hint" style="display:none"></p>
+
+    <table class="crf-status" id="crf-table">
+      <thead><tr><th>Runner</th><th>State</th><th>Phase</th><th>CPU</th><th>Mem</th></tr></thead>
+      <tbody><tr><td colspan="5">loading...</td></tr></tbody>
+    </table>
+    <div id="crf-meta" class="crf-meta"></div>
+    <div id="crf-action-log" class="crf-log"><span class="crf-log-placeholder">Output from fleet actions (Start/Stop/Scale/Test host setup) appears here. Image-build output is in Fleet settings.</span></div>
+  </div>
+
+  <!-- ===== Settings view ===== -->
+  <div id="crf-view-settings" class="crf-view" style="display:none" hidden>
+    <div class="crf-view-head">
+      <strong>Fleet settings</strong>
+      <input type="button" value="Back to console" onclick="window.crfCloseDrawer()" style="width:auto">
+    </div>
+
+    <div class="crf-panel">
+      <p><strong>Authentication</strong> &mdash; token is separate from Apply below.</p>
+      <p>
+        <a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a>
+        &nbsp;&middot;&nbsp; Status: <strong id="crf-tok"><?= $has_token ? 'configured &#10004;' : ($tokenInherited ? 'not set (using default profile&#39;s token)' : 'not set') ?></strong>
+      </p>
+      <p>
+        <input type="password" id="crf-token" placeholder="ghp_... or github_pat_..." style="width:100%;max-width:28em">
+        <input type="button" value="Save token" onclick="window.crfSetToken()" style="width:auto">
+        <input type="button" value="Clear" onclick="window.crfClearToken()" style="width:auto">
+      </p>
+      <p class="crf-field-hint">Stored at <code><?=htmlspecialchars($tokenPath, ENT_QUOTES)?></code> (chmod 600), never in a <code>.cfg</code> file.</p>
+    </div>
+
+    <form id="crf-settings-form" name="ci_runner_farm_settings" method="POST" action="/update.php" target="progressFrame">
+      <input type="hidden" name="#file" value="<?=htmlspecialchars($cfgFileRel, ENT_QUOTES)?>">
+      <?php if ($csrf !== ''): ?><input type="hidden" name="csrf_token" value="<?=htmlspecialchars($csrf, ENT_QUOTES)?>"><?php endif; ?>
+
+      <fieldset class="crf-fieldset">
+        <legend>Connect</legend>
+        <label class="crf-label">Where should runners register
+          <select name="GH_SCOPE" id="GH_SCOPE">
+            <option value="repo" <?=crf_sel($cfg,'GH_SCOPE','repo','repo')?>>These repositories</option>
+            <option value="org" <?=crf_sel($cfg,'GH_SCOPE','org','repo')?>>Whole organization</option>
+          </select>
+        </label>
+        <label class="crf-label">Organization name
+          <input type="text" name="GH_OWNER" id="GH_OWNER" value="<?=crf_g($cfg,'GH_OWNER')?>" placeholder="e.g. my-org">
+        </label>
+        <label class="crf-label">Repositories
+          <input type="text" name="GH_REPOS" id="GH_REPOS" value="<?=crf_g($cfg,'GH_REPOS')?>" placeholder="e.g. my-org/app my-org/api">
+        </label>
+        <p class="crf-field-hint">Space-separated <code>owner/repo</code> for repo scope; organization login for org scope.</p>
+      </fieldset>
+
+      <fieldset class="crf-fieldset">
+        <legend>Capacity</legend>
+        <label class="crf-label">Concurrent runners
+          <input type="number" name="RUNNER_COUNT" id="RUNNER_COUNT" min="1" max="20" value="<?=crf_g($cfg,'RUNNER_COUNT','4')?>">
+        </label>
+        <label class="crf-label">Runner labels
+          <input type="text" name="RUNNER_LABELS" id="RUNNER_LABELS" value="<?=crf_g($cfg,'RUNNER_LABELS','self-hosted,unraid,build')?>">
+        </label>
+        <label class="crf-label">CPUs per runner
+          <input type="text" name="RUNNER_CPUS" value="<?=crf_g($cfg,'RUNNER_CPUS','')?>" placeholder="blank = uncapped">
+        </label>
+        <label class="crf-label">Memory per runner
+          <input type="text" name="RUNNER_MEMORY" value="<?=crf_g($cfg,'RUNNER_MEMORY','16g')?>">
+        </label>
+      </fieldset>
+
+      <fieldset class="crf-fieldset">
+        <legend>Environment</legend>
+        <label class="crf-label">Image source
+          <select name="IMAGE_SOURCE" id="IMAGE_SOURCE" onchange="window.crfImgSrc()">
+            <option value="builtin" <?=crf_sel($cfg,'IMAGE_SOURCE','builtin','builtin')?>>Built-in (build locally)</option>
+            <option value="remote" <?=crf_sel($cfg,'IMAGE_SOURCE','remote','builtin')?>>Remote registry image</option>
+          </select>
+        </label>
+        <label class="crf-label" id="crf-row-image">Remote image
+          <input type="text" name="IMAGE" id="IMAGE" value="<?=crf_g($cfg,'IMAGE','')?>" placeholder="ghcr.io/org/image:tag">
+        </label>
+        <label class="crf-label">Cache root
+          <input type="text" id="CACHE_ROOT" name="CACHE_ROOT" autocomplete="off" spellcheck="false" value="<?=crf_g($cfg,'CACHE_ROOT','/mnt/github-runner')?>" data-pickroot="/mnt" data-pickfolders="true" data-pickfilter="HIDE_FILES_FILTER" placeholder="/mnt/github-runner">
+        </label>
+        <p class="crf-field-hint"><strong>Use a real pool dataset</strong> (e.g. <code>/mnt/&lt;pool&gt;/github-runner</code>), not a <code>/mnt/user/...</code> user share — DinD cannot run overlay2 on FUSE.</p>
+      </fieldset>
+
+      <details class="crf-advanced">
+        <summary>Advanced</summary>
+        <label class="crf-label">Runner group
+          <input type="text" name="RUNNER_GROUP" value="<?=crf_g($cfg,'RUNNER_GROUP')?>" placeholder="optional">
+        </label>
+        <label class="crf-label">Ephemeral
+          <select name="EPHEMERAL">
+            <option value="false" <?=crf_sel($cfg,'EPHEMERAL','false','false')?>>Keep warm between jobs (persistent)</option>
+            <option value="true" <?=crf_sel($cfg,'EPHEMERAL','true','false')?>>Fresh runner every job</option>
+          </select>
+        </label>
+        <label class="crf-label">Run jobs as root
+          <select name="RUN_AS_ROOT">
+            <option value="false" <?=crf_sel($cfg,'RUN_AS_ROOT','false','false')?>>Non-root (like GitHub-hosted)</option>
+            <option value="true" <?=crf_sel($cfg,'RUN_AS_ROOT','true','false')?>>Root (legacy)</option>
+          </select>
+        </label>
+        <label class="crf-label">Autoscaling
+          <select name="AUTOSCALE">
+            <option value="false" <?=crf_sel($cfg,'AUTOSCALE','false','false')?>>off (fixed at Concurrent runners)</option>
+            <option value="true" <?=crf_sel($cfg,'AUTOSCALE','true','false')?>>on (fleet floats by demand)</option>
+          </select>
+        </label>
+        <label class="crf-label">Autoscale: min runners
+          <input type="number" name="AUTOSCALE_MIN" min="0" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MIN','2')?>">
+        </label>
+        <label class="crf-label">Autoscale: max runners
+          <input type="number" name="AUTOSCALE_MAX" min="1" max="40" value="<?=crf_g($cfg,'AUTOSCALE_MAX','16')?>">
+        </label>
+        <label class="crf-label">Autoscale: warm idle buffer
+          <input type="number" name="AUTOSCALE_MIN_IDLE" min="1" max="20" value="<?=crf_g($cfg,'AUTOSCALE_MIN_IDLE','2')?>">
+        </label>
+        <label class="crf-label">Autoscale: step
+          <input type="number" name="AUTOSCALE_STEP" min="1" max="10" value="<?=crf_g($cfg,'AUTOSCALE_STEP','2')?>">
+        </label>
+        <label class="crf-label">Autoscale: check interval (s)
+          <input type="number" name="AUTOSCALE_INTERVAL" min="10" max="600" value="<?=crf_g($cfg,'AUTOSCALE_INTERVAL','30')?>">
+        </label>
+        <label class="crf-label">Autoscale: scale-down grace
+          <input type="number" name="AUTOSCALE_IDLE_GRACE" min="1" max="60" value="<?=crf_g($cfg,'AUTOSCALE_IDLE_GRACE','5')?>">
+        </label>
+        <label class="crf-label" id="crf-row-reg-server">Registry server
+          <input type="text" name="REGISTRY_SERVER" value="<?=crf_g($cfg,'REGISTRY_SERVER','')?>" placeholder="blank = none, e.g. ghcr.io">
+        </label>
+        <label class="crf-label" id="crf-row-reg-user">Registry username
+          <input type="text" name="REGISTRY_USERNAME" value="<?=crf_g($cfg,'REGISTRY_USERNAME','')?>">
+        </label>
+        <label class="crf-label">Auto-update runner image
+          <select name="IMAGE_AUTOUPDATE">
+            <option value="false" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','false','false')?>>off (update manually)</option>
+            <option value="true" <?=crf_sel($cfg,'IMAGE_AUTOUPDATE','true','false')?>>on (pull on a schedule, roll the fleet)</option>
+          </select>
+        </label>
+        <label class="crf-label">Auto-update: check interval (s)
+          <input type="number" name="IMAGE_AUTOUPDATE_INTERVAL" min="300" max="86400" value="<?=crf_g($cfg,'IMAGE_AUTOUPDATE_INTERVAL','1800')?>">
+        </label>
+        <label class="crf-label">Auto-update: drain timeout (s)
+          <input type="number" name="IMAGE_DRAIN_TIMEOUT" min="0" max="86400" value="<?=crf_g($cfg,'IMAGE_DRAIN_TIMEOUT','3600')?>">
+        </label>
+        <label class="crf-label">Workspace tmpfs size
+          <input type="text" name="WORK_TMPFS_SIZE" value="<?=crf_g($cfg,'WORK_TMPFS_SIZE','8g')?>" placeholder="blank = bind to pool">
+        </label>
+        <label class="crf-label">Cache mounts
+          <input type="text" name="CACHE_MOUNTS" value="<?=crf_g($cfg,'CACHE_MOUNTS','pnpm-store:/home/runner/.local/share/pnpm/store npm:/home/runner/.npm yarn:/home/runner/.cache/yarn ms-playwright:/home/runner/.cache/ms-playwright')?>">
+        </label>
+        <label class="crf-label">Docker-in-docker mode
+          <select name="DIND">
+            <option value="true" <?=crf_sel($cfg,'DIND','true','true')?>>true (own daemon per runner, privileged)</option>
+            <option value="false" <?=crf_sel($cfg,'DIND','false','true')?>>false (use host docker.sock)</option>
+          </select>
+        </label>
+        <label class="crf-label">Share host docker.sock
+          <select name="SHARE_DOCKER_SOCK">
+            <option value="false" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','false','false')?>>false</option>
+            <option value="true" <?=crf_sel($cfg,'SHARE_DOCKER_SOCK','true','false')?>>true</option>
+          </select>
+        </label>
+        <label class="crf-label">Network isolation
+          <select name="NETWORK_ISOLATION">
+            <option value="off" <?=crf_sel($cfg,'NETWORK_ISOLATION','off','off')?>>off (default docker bridge)</option>
+            <option value="isolate" <?=crf_sel($cfg,'NETWORK_ISOLATION','isolate','off')?>>isolate (dedicated bridge)</option>
+            <option value="strict" <?=crf_sel($cfg,'NETWORK_ISOLATION','strict','off')?>>strict (dedicated bridge + block host/LAN)</option>
+          </select>
+        </label>
+      </details>
+
+      <p class="crf-drawer-actions">
+        <input type="submit" name="Apply" value="Apply" style="width:auto">
+        <input type="button" value="Reset to defaults" onclick="window.crfResetDefaults(this)" style="width:auto">
+      </p>
+    </form>
+
+    <div id="crf-remote-auth" class="crf-panel">
+      <p><strong>Registry token</strong> &mdash; for private images. Shared by all profiles. <span id="crf-regtok"></span></p>
+      <p>
+        <input type="password" id="crf-registry-token" placeholder="registry password / token" style="width:100%;max-width:28em">
+        <input type="button" value="Save registry token" onclick="window.crfSetRegistryToken()" style="width:auto">
+        <input type="button" value="Clear" onclick="window.crfClearRegistryToken()" style="width:auto">
+      </p>
+    </div>
+
+    <details class="crf-advanced">
+      <summary>Runner image builder</summary>
+      <p class="crf-field-hint">Built-in image: edit, Save, Build. Tagged <code><?=htmlspecialchars($builtinImageTag, ENT_QUOTES)?></code>.</p>
+      <textarea id="crf-dockerfile" rows="10" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px"><?=htmlspecialchars($dockerfile, ENT_QUOTES)?></textarea>
+      <p>
+        <input type="button" value="Save Dockerfile" onclick="window.crfSaveDf()" style="width:auto">
+        <input type="button" value="Build image" onclick="window.crfBuild()" style="width:auto">
+        <span id="crf-build-status" style="color:#888"></span>
+      </p>
+      <div id="crf-build-log" class="crf-log"><span class="crf-log-placeholder">Image build output appears here.</span></div>
+    </details>
+
+    <details class="crf-advanced" id="crf-import-export">
+      <summary>Import / Export</summary>
+      <p class="crf-field-hint">Export a JSON snapshot of this fleet&#39;s settings <strong>and Dockerfile</strong>. Paste it into a chat or ticket for help configuring. Tokens are <strong>never</strong> included &mdash; keep those on the box.</p>
+      <p>
+        <input type="button" value="Export" onclick="window.crfExportConfig()" style="width:auto">
+        <input type="button" value="Copy" onclick="window.crfCopyExport()" style="width:auto">
+        <input type="button" value="Import into form" onclick="window.crfImportConfig()" style="width:auto">
+        <span id="crf-ie-status" class="crf-field-hint" style="display:inline;margin-left:8px"></span>
+      </p>
+      <textarea id="crf-ie-json" rows="12" spellcheck="false" placeholder='{"format":"ci-runner-farm-export", "settings":{...}, "dockerfile":"..."}' style="width:100%;font-family:monospace;font-size:12px"></textarea>
+      <p class="crf-field-hint">Import loads settings into the form and <strong>saves the Dockerfile</strong> when present. Then click <strong>Apply</strong>, then <strong>Build image</strong>.</p>
+    </details>
+
+    <p class="crf-field-hint"><a href="#" onclick="window.crfOpenWizard();return false">Run setup wizard</a></p>
+  </div>
+
+  <!-- ===== Wizard view ===== -->
+  <div id="crf-view-wizard" class="crf-view" style="display:none" hidden>
+    <div class="crf-wizard-card">
+      <div class="crf-wizard-head">
+        <strong>Get your fleet running</strong>
+        <span id="crf-wizard-step-label" class="crf-field-hint">Step 1 of 5</span>
+      </div>
+      <div class="crf-wizard-steps" id="crf-wizard-pills"></div>
+
+      <div class="crf-wizard-pane" data-step="0">
+        <p>Save a GitHub personal access token. This is stored separately from settings Apply.</p>
+        <p><a href="<?=$patUrl?>" target="_blank" rel="noopener">Create a pre-scoped PAT on GitHub &#8599;</a></p>
+        <p>
+          <input type="password" id="crf-wiz-token" placeholder="ghp_... or github_pat_..." style="width:100%;max-width:28em">
+          <input type="button" value="Save token" onclick="window.crfWizardSaveToken()" style="width:auto">
+        </p>
+        <p class="crf-field-hint">Status: <strong id="crf-wiz-tok"><?= $has_token ? 'configured &#10004;' : ($tokenInherited ? 'using default token' : 'not set') ?></strong></p>
+      </div>
+
+      <div class="crf-wizard-pane" data-step="1" style="display:none">
+        <p>Where should runners register?</p>
+        <label class="crf-label">Scope
+          <select id="crf-wiz-scope">
+            <option value="repo">These repositories</option>
+            <option value="org">Whole organization</option>
+          </select>
+        </label>
+        <label class="crf-label">Organization name
+          <input type="text" id="crf-wiz-owner" placeholder="e.g. my-org">
+        </label>
+        <label class="crf-label">Repositories
+          <input type="text" id="crf-wiz-repos" placeholder="e.g. my-org/app my-org/api">
+        </label>
+      </div>
+
+      <div class="crf-wizard-pane" data-step="2" style="display:none">
+        <p>Pick a pool path for caches (not a <code>/mnt/user</code> share).</p>
+        <label class="crf-label">Cache root
+          <input type="text" id="crf-wiz-cache" autocomplete="off" spellcheck="false" placeholder="/mnt/cache/github-runner">
+        </label>
+      </div>
+
+      <div class="crf-wizard-pane" data-step="3" style="display:none">
+        <p>Runner image — Built-in (build in Fleet settings after Launch) or Remote.</p>
+        <label class="crf-label">Image source
+          <select id="crf-wiz-imgsrc">
+            <option value="builtin">Built-in (build locally)</option>
+            <option value="remote">Remote registry image</option>
+          </select>
+        </label>
+        <label class="crf-label" id="crf-wiz-image-row" style="display:none">Remote image
+          <input type="text" id="crf-wiz-image" placeholder="ghcr.io/org/image:tag">
+        </label>
+        <p class="crf-field-hint">For Built-in, open Fleet settings after Launch to Build if needed. Remote images pull on Start.</p>
+      </div>
+
+      <div class="crf-wizard-pane" data-step="4" style="display:none">
+        <p>Settings will be saved, then the fleet starts. You can also skip and use the console.</p>
+        <p id="crf-wiz-launch-hint" class="crf-field-hint"></p>
+      </div>
+
+      <div class="crf-wizard-foot">
+        <input type="button" id="crf-wiz-skip" value="Skip to console" onclick="window.crfSkipWizard()" style="width:auto">
+        <span style="flex:1"></span>
+        <input type="button" id="crf-wiz-back" value="Back" onclick="window.crfWizardBack()" style="width:auto" disabled>
+        <input type="button" id="crf-wiz-next" value="Continue" onclick="window.crfWizardNext()" style="width:auto">
+      </div>
+    </div>
+  </div>
+
+</div>

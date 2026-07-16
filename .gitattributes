@@ -1,0 +1,12 @@
+# Unraid .page header parsing and bash shebangs break on CRLF.
+# Force LF for everything that ends up on the Unraid host (and the builder).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.tgz binary
+*.txz binary
+*.gz binary

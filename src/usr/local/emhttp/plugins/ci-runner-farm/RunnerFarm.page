@@ -4,8 +4,5 @@ Title="CI Runner Farm"
 Icon="icon-docker"
 Tag="server"
 Tabs="true"
+Markdown="false"
 ---
-<!-- CI Runner Farm is a tabbed page: all content lives in the RunnerFarm*
-     child tab pages (Menu="RunnerFarm:N"), which Unraid renders as tabs of
-     this parent. Shared PHP is in include/page-common.php; shared client
-     assets are runner-farm.js / runner-farm.css. -->

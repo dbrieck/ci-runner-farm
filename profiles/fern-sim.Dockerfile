@@ -1,16 +1,17 @@
-# ci-runner-farm runner image for the "opencode-mobile" profile.
-# Ported from opencode-mobile/github-runner (Dockerfile + entrypoint-wrapper.sh)
-# plus DinD wait + healthcheck required by the farm.
+# ci-runner-farm runner image for the "fern-sim" profile.
+# Flutter (stable) + Java 17 + Android SDK so the Unraid runner can analyze,
+# test, and produce Android appbundles — same role as opencode-mobile's image
+# for Expo/Android, but without Node/Go/Playwright.
 #
-# The plugin UI is a single Dockerfile textarea — the entrypoint wrapper is
-# inlined below (no sibling COPY). Paste into Runner image builder for this
-# profile, Save, Build. Tag: ci-runner-farm-runner-opencode-mobile:latest
+# iOS archives still need a Mac; this image is Linux/Android only.
+#
+# Paste into Runner image builder for profile fern-sim, Save, Build.
+# Tag: ci-runner-farm-runner-fern-sim:latest
 FROM myoung34/github-runner:latest
 
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base packages used by Node, Java, Android SDK, and Playwright Chromium.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -18,58 +19,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     unzip \
     zip \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    fonts-liberation \
+    xz-utils \
+    libglu1-mesa \
+    clang \
+    cmake \
+    ninja-build \
+    pkg-config \
+    libgtk-3-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Node 20 + npm via NodeSource
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    node --version && npm --version && \
-    rm -rf /var/lib/apt/lists/*
-
-# Java 17 — matches repo workflow setup-java (Android / Expo builds)
+# Java 17 — Flutter Android toolchain
 RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && \
     java -version && \
     rm -rf /var/lib/apt/lists/*
-
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
 
-# Go 1.23 — Tailscale AAR / gomobile bind
-ENV GO_VERSION=1.23.6
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz && \
-    tar -C /usr/local -xzf /tmp/go.tgz && \
-    rm /tmp/go.tgz && \
-    /usr/local/go/bin/go version
+# Flutter stable (pinned channel; `flutter upgrade` on rebuild)
+ENV FLUTTER_HOME=/opt/flutter
+ENV FLUTTER_GIT_URL=https://github.com/flutter/flutter.git
+RUN git clone --depth 1 -b stable "$FLUTTER_GIT_URL" "$FLUTTER_HOME" \
+ && "$FLUTTER_HOME/bin/flutter" --disable-analytics \
+ && "$FLUTTER_HOME/bin/flutter" config --no-analytics \
+ && "$FLUTTER_HOME/bin/flutter" precache --android \
+ && "$FLUTTER_HOME/bin/dart" --disable-analytics
+ENV PATH=$PATH:$FLUTTER_HOME/bin:$FLUTTER_HOME/bin/cache/dart-sdk/bin
 
-ENV GOROOT=/usr/local/go
-ENV GOPATH=/root/go
-ENV PATH=$PATH:$JAVA_HOME/bin:$GOROOT/bin:$GOPATH/bin
-
-# Android SDK baked under /opt/android-sdk-builtin; entrypoint seeds the mounted ANDROID_HOME
+# Android SDK baked under builtin; entrypoint seeds the mounted ANDROID_HOME
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV ANDROID_HOME=/opt/android-sdk
-ENV ANDROID_NDK_HOME=/opt/android-sdk/ndk/26.1.10909125
 ENV ANDROID_SDK_BUILTIN=/opt/android-sdk-builtin
 ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
 
@@ -83,9 +61,9 @@ RUN mkdir -p ${ANDROID_SDK_BUILTIN}/cmdline-tools && \
       "platform-tools" \
       "platforms;android-36" \
       "build-tools;36.0.0" \
-      "ndk;26.1.10909125" && \
+      "cmdline-tools;latest" && \
     test -d ${ANDROID_SDK_BUILTIN}/platforms/android-36 && \
-    test -d ${ANDROID_SDK_BUILTIN}/ndk/26.1.10909125
+    yes | "$FLUTTER_HOME/bin/flutter" doctor --android-licenses >/dev/null 2>&1 || true
 
 # Seed mounted ANDROID_HOME from builtin. Skip when platforms/android-36 already
 # exists (do not re-copy — races on a shared volume used to kill the runner).
@@ -108,15 +86,12 @@ RUN printf '%s\n' \
   '    else echo "WARNING: Android SDK seed incomplete at ${ANDROID_HOME}" >&2; fi' \
   '  fi' \
   ') 9>"$LOCK"' \
-  'export ANDROID_HOME' \
-  'export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"' \
-  'export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"' \
+  'export ANDROID_HOME ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"' \
   'export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"' \
   'exec "$@"' \
   > /usr/local/bin/entrypoint-wrapper.sh \
  && chmod +x /usr/local/bin/entrypoint-wrapper.sh
 
-# DinD: wait for dockerd before the runner accepts jobs
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   '( while true; do docker info >/dev/null 2>&1 || { rm -f /var/run/docker.pid; service docker start >>/var/log/dockerd.log 2>&1; }; sleep 3; done ) &' \
@@ -125,7 +100,6 @@ RUN printf '%s\n' \
   > /usr/local/bin/wait-docker.sh \
  && chmod +x /usr/local/bin/wait-docker.sh
 
-# Reap runners stuck after GitHub deregistration
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -uo pipefail' \

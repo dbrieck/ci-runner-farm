@@ -12,24 +12,22 @@ installs — everything below is additive.
 
 ## Using profiles from the web UI
 
-Settings > Utilities > CI Runner Farm is a tabbed page (Overview · GitHub ·
-Runners · Runner Image · Storage & Docker), and a **Fleet profile** switcher
-sits at the top of every tab:
+Settings > Utilities > CI Runner Farm is a **fleet console** (wizard on first
+run; **Fleet settings** drawer for cfg). A **Fleet profile** switcher sits in
+the console top bar:
 
 - Click a profile name to switch to that fleet (the page reloads with
-  `?profile=NAME`). Everything on every tab — GitHub scope/repos, runner
-  count, labels, caches, Docker mode, autoscaling, the Dockerfile builder,
-  the fleet controls, the setup checklist, and the live status on the
-  Overview tab — applies to the selected profile only.
+  `?profile=NAME`). Console controls, the settings drawer, and the wizard all
+  apply to the selected profile only.
 - **+ Add profile** creates a new profile, seeded with a copy of the
   `default` profile's current settings, so you only need to change what's
   different (repo, labels, runner count, caches).
 - **Delete this profile** removes a non-default profile's config, token, and
   Dockerfile. It's blocked while that profile's fleet is running — Stop it
   first.
-- Start/Stop/Restart/Scale/Validate on the Overview tab always act on the
-  profile you're currently viewing, and each settings tab's Apply writes to
-  that profile's own config file.
+- Start/Stop/Restart/Scale/Test host setup on the console always act on the
+  profile you're currently viewing, and Fleet settings Apply writes to that
+  profile's own config file.
 
 ## What's namespaced per profile
 

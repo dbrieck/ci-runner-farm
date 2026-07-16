@@ -1,45 +1,16 @@
-# ci-runner-farm runner image for the "opencode-mobile" profile.
-# Ported from opencode-mobile/github-runner (Dockerfile + entrypoint-wrapper.sh)
-# plus DinD wait + healthcheck required by the farm.
+# ci-runner-farm runner image for the "thisprop" profile.
+# Ported from github-runner/Dockerfile (ThisProp: Node, Java, PowerShell, .NET,
+# Firebase, Android/MAUI, eas-cli) plus DinD wait + healthcheck for the farm.
 #
-# The plugin UI is a single Dockerfile textarea — the entrypoint wrapper is
-# inlined below (no sibling COPY). Paste into Runner image builder for this
-# profile, Save, Build. Tag: ci-runner-farm-runner-opencode-mobile:latest
+# Paste via Import (thisprop.export.json) or Runner image builder. Build tag:
+# ci-runner-farm-runner-thisprop:latest
 FROM myoung34/github-runner:latest
 
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base packages used by Node, Java, Android SDK, and Playwright Chromium.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    wget \
-    git \
-    unzip \
-    zip \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    fonts-liberation \
+    ca-certificates curl wget git unzip zip apt-transport-https \
  && rm -rf /var/lib/apt/lists/*
 
 # Node 20 + npm via NodeSource
@@ -48,28 +19,36 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     node --version && npm --version && \
     rm -rf /var/lib/apt/lists/*
 
-# Java 17 — matches repo workflow setup-java (Android / Expo builds)
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && \
-    java -version && \
+# Java 21 (Firebase emulators / firebase-tools 15.x) + Java 17 (Android/javac)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-21-jre-headless openjdk-17-jdk-headless && \
+    java -version && javac -version && \
     rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+# PowerShell via Microsoft feed
+RUN wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb && \
+    dpkg -i packages-microsoft-prod.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends powershell && \
+    rm -f packages-microsoft-prod.deb && \
+    pwsh --version && \
+    rm -rf /var/lib/apt/lists/*
 
-# Go 1.23 — Tailscale AAR / gomobile bind
-ENV GO_VERSION=1.23.6
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz && \
-    tar -C /usr/local -xzf /tmp/go.tgz && \
-    rm /tmp/go.tgz && \
-    /usr/local/go/bin/go version
+# .NET 10
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
+    chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh --version 10.0.301 --install-dir /usr/share/dotnet && \
+    ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet && \
+    rm /tmp/dotnet-install.sh && \
+    dotnet --version
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH=$PATH:/usr/share/dotnet
 
-ENV GOROOT=/usr/local/go
-ENV GOPATH=/root/go
-ENV PATH=$PATH:$JAVA_HOME/bin:$GOROOT/bin:$GOPATH/bin
+RUN npm install -g firebase-tools@15.20.0 eas-cli
 
-# Android SDK baked under /opt/android-sdk-builtin; entrypoint seeds the mounted ANDROID_HOME
+# Android SDK baked under builtin; entrypoint seeds the mounted ANDROID_HOME
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV ANDROID_HOME=/opt/android-sdk
-ENV ANDROID_NDK_HOME=/opt/android-sdk/ndk/26.1.10909125
 ENV ANDROID_SDK_BUILTIN=/opt/android-sdk-builtin
 ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
 
@@ -82,13 +61,14 @@ RUN mkdir -p ${ANDROID_SDK_BUILTIN}/cmdline-tools && \
     ${ANDROID_SDK_BUILTIN}/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_SDK_BUILTIN} \
       "platform-tools" \
       "platforms;android-36" \
-      "build-tools;36.0.0" \
-      "ndk;26.1.10909125" && \
+      "build-tools;36.0.0" && \
     test -d ${ANDROID_SDK_BUILTIN}/platforms/android-36 && \
-    test -d ${ANDROID_SDK_BUILTIN}/ndk/26.1.10909125
+    ANDROID_HOME=${ANDROID_SDK_BUILTIN} ANDROID_SDK_ROOT=${ANDROID_SDK_BUILTIN} \
+      dotnet workload install android
 
-# Seed mounted ANDROID_HOME from builtin. Skip when platforms/android-36 already
-# exists (do not re-copy — races on a shared volume used to kill the runner).
+# Seed mounted ANDROID_HOME from builtin. Skip entirely when the SDK is already
+# present (marker or platforms/android-36) — re-copying a partial tree with
+# set -e used to kill runners on "File exists" races.
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -uo pipefail' \
@@ -108,15 +88,12 @@ RUN printf '%s\n' \
   '    else echo "WARNING: Android SDK seed incomplete at ${ANDROID_HOME}" >&2; fi' \
   '  fi' \
   ') 9>"$LOCK"' \
-  'export ANDROID_HOME' \
-  'export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"' \
-  'export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"' \
+  'export ANDROID_HOME ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"' \
   'export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"' \
   'exec "$@"' \
   > /usr/local/bin/entrypoint-wrapper.sh \
  && chmod +x /usr/local/bin/entrypoint-wrapper.sh
 
-# DinD: wait for dockerd before the runner accepts jobs
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   '( while true; do docker info >/dev/null 2>&1 || { rm -f /var/run/docker.pid; service docker start >>/var/log/dockerd.log 2>&1; }; sleep 3; done ) &' \
@@ -125,7 +102,6 @@ RUN printf '%s\n' \
   > /usr/local/bin/wait-docker.sh \
  && chmod +x /usr/local/bin/wait-docker.sh
 
-# Reap runners stuck after GitHub deregistration
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -uo pipefail' \

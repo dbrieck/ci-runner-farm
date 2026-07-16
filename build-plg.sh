@@ -123,6 +123,7 @@ cat > "$OUT" <<PLG
         version="&version;"
         pluginURL="&pluginURL;"
         min="6.12.0"
+        launch="Settings/RunnerFarm"
         support="${SUPPORT_URL}"
         icon="docker">
 
@@ -173,7 +174,7 @@ echo ""
 echo "+=============================================================+"
 echo "| ci-runner-farm ${VERSION} installed.                         "
 echo "| Settings > Utilities > CI Runner Farm                        "
-echo "| Set a GitHub PAT, then Start (or Validate without a token).  "
+echo "| Fleet console: wizard + settings drawer + Start.               "
 echo "+=============================================================+"
 ]]></INLINE>
 </FILE>
