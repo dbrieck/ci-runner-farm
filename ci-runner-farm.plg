@@ -2,12 +2,12 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name          "ci-runner-farm">
 <!ENTITY author        "Lime Technology">
-<!ENTITY version       "2026.07.16.1437.0-1.5.0">
+<!ENTITY version       "2026.11.23.0000.0-1.5.0">
 <!ENTITY pluginVersion "1.5.0">
 <!ENTITY releaseTag    "v1.5.0">
-<!ENTITY pluginURL     "https://storage.googleapis.com/ci-runner-farm/ci-runner-farm.plg">
+<!ENTITY pluginURL     "https://github.com/dbrieck/ci-runner-farm/releases/latest/download/ci-runner-farm.plg">
 <!ENTITY packageName   "ci-runner-farm-2026.07.16.1437.0-1.5.0.tgz">
-<!ENTITY packageURL    "https://storage.googleapis.com/ci-runner-farm/ci-runner-farm-2026.07.16.1437.0-1.5.0.tgz">
+<!ENTITY packageURL    "https://github.com/dbrieck/ci-runner-farm/releases/download/v1.5.0/ci-runner-farm-2026.07.16.1437.0-1.5.0.tgz">
 <!ENTITY packageMD5    "41a5c138c104aeb557ce32b4a84487ff">
 <!ENTITY plgdir        "/usr/local/emhttp/plugins/&name;">
 <!ENTITY cfgdir        "/boot/config/plugins/&name;">

@@ -75,6 +75,19 @@ https://github.com/unraid/ci-runner-farm/releases/latest/download/ci-runner-farm
 Unraid always resolves this to the newest published release, and its built-in
 "check for updates" keeps the plugin current.
 
+**This fork (`dbrieck/ci-runner-farm`)** publishes its own builds as GitHub
+release assets. Install or switch an existing install with:
+
+```
+https://github.com/dbrieck/ci-runner-farm/releases/latest/download/ci-runner-farm.plg
+```
+
+Builds used to be served from the public bucket `gs://ci-runner-farm`. That
+bucket is retired, so a server whose installed `.plg` still points at
+`storage.googleapis.com/ci-runner-farm` must be switched with the URL above
+before the bucket is deleted. Check with
+`grep pluginURL /boot/config/plugins/ci-runner-farm.plg`.
+
 ### Installing from a private repo / fork
 
 Both methods above need a **public** release URL — Unraid's plugin installer
@@ -82,6 +95,8 @@ downloads anonymously, and a private repo's release assets return 404 without
 authentication. Two ways around it:
 
 #### Option A: host on Google Cloud Storage (keeps update checks working)
+
+This fork no longer uses this option; it is kept for private forks.
 
 Serve the two build artifacts from a public GCS bucket — public objects serve
 raw bytes at stable URLs, the `.plg`'s MD5 pin makes the hosting location
